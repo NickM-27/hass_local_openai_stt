@@ -32,6 +32,7 @@ from .const import (
     CONF_BASE_URL,
     CONF_DEBUG_LOG,
     CONF_DEBUG_LOG_KEEP,
+    CONF_MIC_GAIN,
     CONF_MODEL,
     CONF_PROMPT,
     CONF_TEMPERATURE,
@@ -42,6 +43,7 @@ from .const import (
     DEFAULT_BASE_URL,
     DEFAULT_DEBUG_LOG,
     DEFAULT_DEBUG_LOG_KEEP,
+    DEFAULT_MIC_GAIN,
     DEFAULT_PROMPT,
     DEFAULT_TEMPERATURE,
     DEFAULT_VAD_MIN_SPEECH_SECONDS,
@@ -234,6 +236,17 @@ class LocalOpenAISTTOptionsFlow(OptionsFlow):
                         min=0.1,
                         max=0.95,
                         step=0.05,
+                        mode=NumberSelectorMode.SLIDER,
+                    )
+                ),
+                vol.Optional(
+                    CONF_MIC_GAIN,
+                    default=cur.get(CONF_MIC_GAIN, DEFAULT_MIC_GAIN),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=1.0,
+                        max=10.0,
+                        step=0.5,
                         mode=NumberSelectorMode.SLIDER,
                     )
                 ),
