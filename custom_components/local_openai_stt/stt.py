@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterable
 import io
 import logging
+import time
 import wave
 
 from openai import AsyncOpenAI, OpenAIError
@@ -29,6 +30,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import (
     CONF_API_KEY,
     CONF_BASE_URL,
+    CONF_DEBUG_LOG,
+    CONF_DEBUG_LOG_KEEP,
     CONF_MODEL,
     CONF_PROMPT,
     CONF_TEMPERATURE,
@@ -36,6 +39,8 @@ from .const import (
     CONF_VAD_SILENCE_SECONDS,
     CONF_VAD_SPEECH_THRESHOLD,
     DEFAULT_API_KEY,
+    DEFAULT_DEBUG_LOG,
+    DEFAULT_DEBUG_LOG_KEEP,
     DEFAULT_PROMPT,
     DEFAULT_TEMPERATURE,
     DEFAULT_VAD_MIN_SPEECH_SECONDS,
@@ -43,6 +48,7 @@ from .const import (
     DEFAULT_VAD_SPEECH_THRESHOLD,
     DOMAIN,
 )
+from .session_log import SessionLogger, open_session_logger
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -55,12 +61,63 @@ VAD_CHUNK_SECONDS = SAMPLES_PER_VAD_CHUNK / SAMPLE_RATE
 
 
 SUPPORTED_LANGUAGES: list[str] = [
-    "af", "ar", "az", "be", "bg", "bs", "ca", "cs", "cy", "da",
-    "de", "el", "en", "es", "et", "fa", "fi", "fr", "gl", "he",
-    "hi", "hr", "hu", "hy", "id", "is", "it", "ja", "kk", "kn",
-    "ko", "lt", "lv", "mi", "mk", "mr", "ms", "ne", "nl", "no",
-    "pl", "pt", "ro", "ru", "sk", "sl", "sr", "sv", "sw", "ta",
-    "th", "tl", "tr", "uk", "ur", "vi", "zh",
+    "af",
+    "ar",
+    "az",
+    "be",
+    "bg",
+    "bs",
+    "ca",
+    "cs",
+    "cy",
+    "da",
+    "de",
+    "el",
+    "en",
+    "es",
+    "et",
+    "fa",
+    "fi",
+    "fr",
+    "gl",
+    "he",
+    "hi",
+    "hr",
+    "hu",
+    "hy",
+    "id",
+    "is",
+    "it",
+    "ja",
+    "kk",
+    "kn",
+    "ko",
+    "lt",
+    "lv",
+    "mi",
+    "mk",
+    "mr",
+    "ms",
+    "ne",
+    "nl",
+    "no",
+    "pl",
+    "pt",
+    "ro",
+    "ru",
+    "sk",
+    "sl",
+    "sr",
+    "sv",
+    "sw",
+    "ta",
+    "th",
+    "tl",
+    "tr",
+    "uk",
+    "ur",
+    "vi",
+    "zh",
 ]
 
 
@@ -160,27 +217,52 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             opts.get(CONF_VAD_SPEECH_THRESHOLD, DEFAULT_VAD_SPEECH_THRESHOLD)
         )
 
-        pcm = await _collect_until_silence(
-            stream,
+        session_logger = open_session_logger(
+            hass=self.hass,
+            enabled=bool(opts.get(CONF_DEBUG_LOG, DEFAULT_DEBUG_LOG)),
+            keep=int(opts.get(CONF_DEBUG_LOG_KEEP, DEFAULT_DEBUG_LOG_KEEP)),
+            metadata=metadata,
+            chunk_samples=SAMPLES_PER_VAD_CHUNK,
+            chunk_bytes=BYTES_PER_VAD_CHUNK,
             silence_seconds=silence_seconds,
             min_speech_seconds=min_speech_seconds,
-            speech_threshold=threshold,
+            threshold=threshold,
         )
 
+        try:
+            pcm = await _collect_until_silence(
+                stream,
+                silence_seconds=silence_seconds,
+                min_speech_seconds=min_speech_seconds,
+                speech_threshold=threshold,
+                session_logger=session_logger,
+            )
+        finally:
+            session_logger.close_collection(audio_bytes=None)
+
         if not pcm:
+            session_logger.write_event("RESULT empty_audio")
+            session_logger.close()
             return SpeechResult(None, SpeechResultState.ERROR)
 
+        session_logger.close_collection(audio_bytes=len(pcm))
         wav_bytes = _pcm_to_wav(pcm)
 
         try:
             text = await self._transcribe(metadata, wav_bytes)
         except OpenAIError as err:
             _LOGGER.error("Transcription failed: %s", err)
+            session_logger.write_event(f"RESULT transcription_error: {err!r}")
+            session_logger.close()
             return SpeechResult(None, SpeechResultState.ERROR)
 
         if text is None:
+            session_logger.write_event("RESULT no_text")
+            session_logger.close()
             return SpeechResult(None, SpeechResultState.ERROR)
 
+        session_logger.write_event(f"RESULT ok text={text!r} chars={len(text)}")
+        session_logger.close()
         return SpeechResult(text, SpeechResultState.SUCCESS)
 
     async def _transcribe(
@@ -194,9 +276,7 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             "model": opts[CONF_MODEL],
             "file": ("audio.wav", wav_bytes, "audio/wav"),
             "response_format": "json",
-            "temperature": float(
-                opts.get(CONF_TEMPERATURE, DEFAULT_TEMPERATURE)
-            ),
+            "temperature": float(opts.get(CONF_TEMPERATURE, DEFAULT_TEMPERATURE)),
         }
 
         prompt = opts.get(CONF_PROMPT, DEFAULT_PROMPT)
@@ -217,6 +297,7 @@ async def _collect_until_silence(
     silence_seconds: float,
     min_speech_seconds: float,
     speech_threshold: float,
+    session_logger: SessionLogger,
 ) -> bytes:
     """Read PCM frames from the stream until the user stops speaking.
 
@@ -233,11 +314,25 @@ async def _collect_until_silence(
     speech_started = False
     speech_seconds = 0.0
     trailing_silence = 0.0
+    chunk_index = 0
+    last_recv_monotonic: float | None = None
 
     async for chunk in stream:
+        now = time.monotonic()
+        gap = (now - last_recv_monotonic) if last_recv_monotonic is not None else 0.0
+        last_recv_monotonic = now
+
         if not chunk:
-            # Producer signalled end-of-stream.
+            session_logger.write_event(
+                f"STREAM end_of_stream gap={gap:.3f}s "
+                f"speech_started={speech_started} "
+                f"speech_seconds={speech_seconds:.3f} "
+                f"trailing_silence={trailing_silence:.3f}"
+            )
             break
+
+        session_logger.write_event(f"RECV bytes={len(chunk)} gap_since_prev={gap:.3f}s")
+
         recorded.extend(chunk)
         leftover.extend(chunk)
 
@@ -248,11 +343,24 @@ async def _collect_until_silence(
             prob = vad(frame)
 
             if prob >= speech_threshold:
+                if not speech_started:
+                    session_logger.write_event(
+                        f"SPEECH_START prob={prob:.3f} chunk_index={chunk_index}"
+                    )
                 speech_started = True
                 speech_seconds += VAD_CHUNK_SECONDS
                 trailing_silence = 0.0
             elif speech_started:
                 trailing_silence += VAD_CHUNK_SECONDS
+
+            session_logger.log_chunk(
+                index=chunk_index,
+                prob=prob,
+                speech_started=speech_started,
+                speech_seconds=speech_seconds,
+                trailing_silence=trailing_silence,
+            )
+            chunk_index += 1
 
             if (
                 speech_started
@@ -273,8 +381,19 @@ async def _collect_until_silence(
                     trailing_silence,
                     len(recorded),
                 )
+                session_logger.write_event(
+                    f"END_OF_SPEECH speech_seconds={speech_seconds:.3f} "
+                    f"trailing_silence={trailing_silence:.3f} "
+                    f"recorded_bytes={len(recorded)} dropped_bytes={max(0, drop)}"
+                )
                 return bytes(recorded)
 
+    session_logger.write_event(
+        f"STREAM_EXHAUSTED speech_started={speech_started} "
+        f"speech_seconds={speech_seconds:.3f} "
+        f"trailing_silence={trailing_silence:.3f} "
+        f"recorded_bytes={len(recorded)}"
+    )
     return bytes(recorded)
 
 

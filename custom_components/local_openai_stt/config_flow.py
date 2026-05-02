@@ -30,6 +30,8 @@ from homeassistant.helpers.selector import (
 from .const import (
     CONF_API_KEY,
     CONF_BASE_URL,
+    CONF_DEBUG_LOG,
+    CONF_DEBUG_LOG_KEEP,
     CONF_MODEL,
     CONF_PROMPT,
     CONF_TEMPERATURE,
@@ -38,6 +40,8 @@ from .const import (
     CONF_VAD_SPEECH_THRESHOLD,
     DEFAULT_API_KEY,
     DEFAULT_BASE_URL,
+    DEFAULT_DEBUG_LOG,
+    DEFAULT_DEBUG_LOG_KEEP,
     DEFAULT_PROMPT,
     DEFAULT_TEMPERATURE,
     DEFAULT_VAD_MIN_SPEECH_SECONDS,
@@ -132,9 +136,7 @@ class LocalOpenAISTTConfigFlow(ConfigFlow, domain=DOMAIN):
                 ): str,
             }
         )
-        return self.async_show_form(
-            step_id="user", data_schema=schema, errors=errors
-        )
+        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
     async def async_step_settings(
         self, user_input: dict[str, Any] | None = None
@@ -147,9 +149,7 @@ class LocalOpenAISTTConfigFlow(ConfigFlow, domain=DOMAIN):
         schema = vol.Schema(
             {
                 vol.Required(CONF_MODEL): _model_selector(self._models),
-                vol.Optional(
-                    CONF_PROMPT, default=DEFAULT_PROMPT
-                ): _prompt_selector(),
+                vol.Optional(CONF_PROMPT, default=DEFAULT_PROMPT): _prompt_selector(),
                 vol.Optional(
                     CONF_TEMPERATURE, default=DEFAULT_TEMPERATURE
                 ): _temperature_selector(),
@@ -238,6 +238,21 @@ class LocalOpenAISTTOptionsFlow(OptionsFlow):
                         max=0.95,
                         step=0.05,
                         mode=NumberSelectorMode.SLIDER,
+                    )
+                ),
+                vol.Optional(
+                    CONF_DEBUG_LOG,
+                    default=cur.get(CONF_DEBUG_LOG, DEFAULT_DEBUG_LOG),
+                ): bool,
+                vol.Optional(
+                    CONF_DEBUG_LOG_KEEP,
+                    default=cur.get(CONF_DEBUG_LOG_KEEP, DEFAULT_DEBUG_LOG_KEEP),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=1,
+                        max=200,
+                        step=1,
+                        mode=NumberSelectorMode.BOX,
                     )
                 ),
             }
