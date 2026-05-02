@@ -1,0 +1,5 @@
+{
+  "name": "Local OpenAI STT",
+  "render_readme": false,
+  "homeassistant": "2026.5.0"
+}

@@ -1,0 +1,12 @@
+{
+  "domain": "local_openai_stt",
+  "name": "Local OpenAI STT",
+  "codeowners": ["@nickmowen"],
+  "config_flow": true,
+  "documentation": "https://github.com/nickmowen/hass_local_openai_stt",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/nickmowen/hass_local_openai_stt/issues",
+  "requirements": ["openai==1.59.7", "pymicro-vad==1.0.0"],
+  "version": "0.1.0"
+}
