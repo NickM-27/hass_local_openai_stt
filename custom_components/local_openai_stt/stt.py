@@ -59,6 +59,11 @@ SAMPLES_PER_VAD_CHUNK = SileroVoiceActivityDetector.chunk_samples()
 BYTES_PER_VAD_CHUNK = SileroVoiceActivityDetector.chunk_bytes()
 VAD_CHUNK_SECONDS = SAMPLES_PER_VAD_CHUNK / SAMPLE_RATE
 
+# How long we keep listening before giving up if VAD never declares speech.
+# Once speech has started, this no longer applies — long questions are fine
+# as long as voice activity continues.
+NO_SPEECH_TIMEOUT_SECONDS = 5.0
+
 
 SUPPORTED_LANGUAGES: list[str] = [
     "af",
@@ -316,6 +321,7 @@ async def _collect_until_silence(
     trailing_silence = 0.0
     chunk_index = 0
     last_recv_monotonic: float | None = None
+    session_start = time.monotonic()
 
     async for chunk in stream:
         now = time.monotonic()
@@ -361,6 +367,15 @@ async def _collect_until_silence(
                 trailing_silence=trailing_silence,
             )
             chunk_index += 1
+
+            if not speech_started:
+                elapsed = time.monotonic() - session_start
+                if elapsed >= NO_SPEECH_TIMEOUT_SECONDS:
+                    session_logger.write_event(
+                        f"NO_SPEECH_TIMEOUT elapsed={elapsed:.3f}s "
+                        f"recorded_bytes={len(recorded)}"
+                    )
+                    return bytes(recorded)
 
             if (
                 speech_started
