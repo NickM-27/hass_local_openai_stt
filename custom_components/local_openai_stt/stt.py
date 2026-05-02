@@ -36,7 +36,7 @@ from .const import (
     CONF_PROMPT,
     CONF_TEMPERATURE,
     CONF_VAD_MIN_SPEECH_SECONDS,
-    CONF_VAD_SILENCE_SECONDS,
+    CONF_VAD_SENSITIVITY,
     CONF_VAD_SPEECH_THRESHOLD,
     DEFAULT_API_KEY,
     DEFAULT_DEBUG_LOG,
@@ -44,9 +44,10 @@ from .const import (
     DEFAULT_PROMPT,
     DEFAULT_TEMPERATURE,
     DEFAULT_VAD_MIN_SPEECH_SECONDS,
-    DEFAULT_VAD_SILENCE_SECONDS,
+    DEFAULT_VAD_SENSITIVITY,
     DEFAULT_VAD_SPEECH_THRESHOLD,
     DOMAIN,
+    VadSensitivity,
 )
 from .session_log import SessionLogger, open_session_logger
 
@@ -212,9 +213,8 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
     ) -> SpeechResult:
         """Run VAD, then send the captured utterance to the STT backend."""
         opts = self._opts
-        silence_seconds = float(
-            opts.get(CONF_VAD_SILENCE_SECONDS, DEFAULT_VAD_SILENCE_SECONDS)
-        )
+        sensitivity = opts.get(CONF_VAD_SENSITIVITY, DEFAULT_VAD_SENSITIVITY)
+        silence_seconds = VadSensitivity.to_seconds(sensitivity)
         min_speech_seconds = float(
             opts.get(CONF_VAD_MIN_SPEECH_SECONDS, DEFAULT_VAD_MIN_SPEECH_SECONDS)
         )

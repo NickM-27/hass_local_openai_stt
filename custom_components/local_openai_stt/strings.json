@@ -42,19 +42,28 @@
           "model": "Model",
           "prompt": "Prompt",
           "temperature": "Temperature",
-          "vad_silence_seconds": "End-of-speech silence",
+          "vad_sensitivity": "End-of-speech sensitivity",
           "vad_min_speech_seconds": "Minimum speech duration",
           "vad_speech_threshold": "Speech detection threshold",
           "debug_log": "Write per-session VAD logs",
           "debug_log_keep": "Number of session logs to keep"
         },
         "data_description": {
-          "vad_silence_seconds": "Trailing silence (in seconds) before the utterance is considered finished.",
+          "vad_sensitivity": "How quickly the utterance ends after you stop speaking. Relaxed waits longer, Aggressive cuts off sooner.",
           "vad_min_speech_seconds": "How much speech must be detected before end-of-speech can fire.",
           "vad_speech_threshold": "Silero VAD probability above which a frame is treated as speech (0–1).",
           "debug_log": "When on, each STT call writes one log file under <config>/local_openai_stt_sessions/ with per-chunk VAD probabilities. Use for diagnosing 'never ends' problems; turn off when done.",
           "debug_log_keep": "Older session logs are deleted automatically once this many newer sessions exist."
         }
+      }
+    }
+  },
+  "selector": {
+    "vad_sensitivity": {
+      "options": {
+        "relaxed": "Relaxed",
+        "default": "Default",
+        "aggressive": "Aggressive"
       }
     }
   }

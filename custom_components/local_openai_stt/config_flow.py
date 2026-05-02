@@ -36,7 +36,7 @@ from .const import (
     CONF_PROMPT,
     CONF_TEMPERATURE,
     CONF_VAD_MIN_SPEECH_SECONDS,
-    CONF_VAD_SILENCE_SECONDS,
+    CONF_VAD_SENSITIVITY,
     CONF_VAD_SPEECH_THRESHOLD,
     DEFAULT_API_KEY,
     DEFAULT_BASE_URL,
@@ -45,9 +45,10 @@ from .const import (
     DEFAULT_PROMPT,
     DEFAULT_TEMPERATURE,
     DEFAULT_VAD_MIN_SPEECH_SECONDS,
-    DEFAULT_VAD_SILENCE_SECONDS,
+    DEFAULT_VAD_SENSITIVITY,
     DEFAULT_VAD_SPEECH_THRESHOLD,
     DOMAIN,
+    VadSensitivity,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -199,17 +200,13 @@ class LocalOpenAISTTOptionsFlow(OptionsFlow):
                     default=cur.get(CONF_TEMPERATURE, DEFAULT_TEMPERATURE),
                 ): _temperature_selector(),
                 vol.Optional(
-                    CONF_VAD_SILENCE_SECONDS,
-                    default=cur.get(
-                        CONF_VAD_SILENCE_SECONDS, DEFAULT_VAD_SILENCE_SECONDS
-                    ),
-                ): NumberSelector(
-                    NumberSelectorConfig(
-                        min=0.2,
-                        max=3.0,
-                        step=0.1,
-                        mode=NumberSelectorMode.BOX,
-                        unit_of_measurement="s",
+                    CONF_VAD_SENSITIVITY,
+                    default=cur.get(CONF_VAD_SENSITIVITY, DEFAULT_VAD_SENSITIVITY),
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[s.value for s in VadSensitivity],
+                        mode=SelectSelectorMode.DROPDOWN,
+                        translation_key=CONF_VAD_SENSITIVITY,
                     )
                 ),
                 vol.Optional(
