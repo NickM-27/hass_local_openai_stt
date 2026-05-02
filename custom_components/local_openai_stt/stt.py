@@ -8,7 +8,7 @@ import logging
 import wave
 
 from openai import AsyncOpenAI, OpenAIError
-from pymicro_vad import MicroVad
+from pysilero_vad import SileroVoiceActivityDetector
 
 from homeassistant.components.stt import (
     AudioBitRates,
@@ -48,8 +48,9 @@ _LOGGER = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
 SAMPLE_WIDTH = 2  # 16-bit
-SAMPLES_PER_VAD_CHUNK = 160  # 10 ms at 16 kHz
-BYTES_PER_VAD_CHUNK = SAMPLES_PER_VAD_CHUNK * SAMPLE_WIDTH
+# Silero requires exactly 512 samples per call at 16 kHz (~32 ms).
+SAMPLES_PER_VAD_CHUNK = SileroVoiceActivityDetector.chunk_samples()
+BYTES_PER_VAD_CHUNK = SileroVoiceActivityDetector.chunk_bytes()
 VAD_CHUNK_SECONDS = SAMPLES_PER_VAD_CHUNK / SAMPLE_RATE
 
 
@@ -220,11 +221,12 @@ async def _collect_until_silence(
     """Read PCM frames from the stream until the user stops speaking.
 
     The HA pipeline streams 16 kHz mono int16 PCM. We feed the data through
-    pymicro-vad in 10 ms chunks and stop once we have observed enough trailing
-    silence after speech to consider the utterance complete. If the stream
-    ends before that condition is met, we return whatever we have.
+    Silero VAD in fixed-size chunks (512 samples / ~32 ms) and stop once we
+    have observed enough trailing silence after speech to consider the
+    utterance complete. If the stream ends before that condition is met, we
+    return whatever we have.
     """
-    vad = MicroVad()
+    vad = SileroVoiceActivityDetector()
     recorded = bytearray()
     leftover = bytearray()
 
@@ -248,7 +250,7 @@ async def _collect_until_silence(
             frame = bytes(leftover[:BYTES_PER_VAD_CHUNK])
             del leftover[:BYTES_PER_VAD_CHUNK]
 
-            prob = vad.Process10ms(frame)
+            prob = vad(frame)
 
             if prob >= speech_threshold:
                 speech_started = True

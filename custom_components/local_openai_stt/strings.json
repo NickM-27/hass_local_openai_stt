@@ -1,0 +1,57 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Local OpenAI STT",
+        "description": "Connect to your local OpenAI-compatible speech-to-text server (e.g. faster-whisper-server, whisper.cpp, LocalAI).",
+        "data": {
+          "base_url": "Base URL",
+          "api_key": "API key"
+        },
+        "data_description": {
+          "base_url": "Full URL ending in /v1, e.g. http://localhost:8000/v1",
+          "api_key": "Optional. Many local servers do not require one."
+        }
+      },
+      "settings": {
+        "title": "Speech-to-text settings",
+        "data": {
+          "model": "Model",
+          "prompt": "Prompt",
+          "temperature": "Temperature"
+        },
+        "data_description": {
+          "model": "Whisper model to use for transcription.",
+          "prompt": "Optional bias text passed with each request. Useful for unusual vocabulary, names, or acronyms.",
+          "temperature": "Sampling temperature. 0 is deterministic; higher values allow more variation."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the server or list models. Check the base URL and API key."
+    },
+    "abort": {
+      "already_configured": "A Local OpenAI STT entry for this base URL already exists."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Local OpenAI STT options",
+        "data": {
+          "model": "Model",
+          "prompt": "Prompt",
+          "temperature": "Temperature",
+          "vad_silence_seconds": "End-of-speech silence",
+          "vad_min_speech_seconds": "Minimum speech duration",
+          "vad_speech_threshold": "Speech detection threshold"
+        },
+        "data_description": {
+          "vad_silence_seconds": "Trailing silence (in seconds) before the utterance is considered finished.",
+          "vad_min_speech_seconds": "How much speech must be detected before end-of-speech can fire.",
+          "vad_speech_threshold": "Silero VAD probability above which a frame is treated as speech (0–1)."
+        }
+      }
+    }
+  }
+}
