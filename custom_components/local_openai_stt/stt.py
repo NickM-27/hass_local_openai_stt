@@ -233,19 +233,14 @@ async def _collect_until_silence(
     speech_started = False
     speech_seconds = 0.0
     trailing_silence = 0.0
-    finished = False
 
     async for chunk in stream:
         if not chunk:
-            continue
+            # Producer signalled end-of-stream.
+            break
         recorded.extend(chunk)
-
-        if finished:
-            # Drain remaining bytes from the iterator to let the producer close
-            # cleanly, but do not record them or run VAD.
-            continue
-
         leftover.extend(chunk)
+
         while len(leftover) >= BYTES_PER_VAD_CHUNK:
             frame = bytes(leftover[:BYTES_PER_VAD_CHUNK])
             del leftover[:BYTES_PER_VAD_CHUNK]
@@ -264,13 +259,21 @@ async def _collect_until_silence(
                 and speech_seconds >= min_speech_seconds
                 and trailing_silence >= silence_seconds
             ):
-                finished = True
+                # End-of-speech: returning closes the stream from our side, which
+                # is required because `requires_external_vad=False` means the
+                # pipeline will not send a terminating empty chunk.
                 # Whisper benefits from ~200 ms of trailing silence; drop the rest.
                 extra = max(0.0, trailing_silence - 0.2)
                 drop = int(extra * SAMPLE_RATE) * SAMPLE_WIDTH
                 if 0 < drop < len(recorded):
                     del recorded[len(recorded) - drop :]
-                break
+                _LOGGER.debug(
+                    "End of speech: %.2fs speech, %.2fs trailing silence, %d bytes",
+                    speech_seconds,
+                    trailing_silence,
+                    len(recorded),
+                )
+                return bytes(recorded)
 
     return bytes(recorded)
 
