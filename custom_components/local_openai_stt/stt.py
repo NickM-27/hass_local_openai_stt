@@ -37,7 +37,6 @@ from .const import (
     CONF_MODEL,
     CONF_PROMPT,
     CONF_TEMPERATURE,
-    CONF_VAD_MIN_SPEECH_SECONDS,
     CONF_VAD_SENSITIVITY,
     CONF_VAD_SPEECH_THRESHOLD,
     DEFAULT_API_KEY,
@@ -46,7 +45,6 @@ from .const import (
     DEFAULT_MIC_GAIN,
     DEFAULT_PROMPT,
     DEFAULT_TEMPERATURE,
-    DEFAULT_VAD_MIN_SPEECH_SECONDS,
     DEFAULT_VAD_SENSITIVITY,
     DEFAULT_VAD_SPEECH_THRESHOLD,
     DOMAIN,
@@ -218,9 +216,6 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
         opts = self._opts
         sensitivity = opts.get(CONF_VAD_SENSITIVITY, DEFAULT_VAD_SENSITIVITY)
         silence_seconds = VadSensitivity.to_seconds(sensitivity)
-        min_speech_seconds = float(
-            opts.get(CONF_VAD_MIN_SPEECH_SECONDS, DEFAULT_VAD_MIN_SPEECH_SECONDS)
-        )
         threshold = float(
             opts.get(CONF_VAD_SPEECH_THRESHOLD, DEFAULT_VAD_SPEECH_THRESHOLD)
         )
@@ -235,7 +230,6 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             chunk_samples=SAMPLES_PER_VAD_CHUNK,
             chunk_bytes=BYTES_PER_VAD_CHUNK,
             silence_seconds=silence_seconds,
-            min_speech_seconds=min_speech_seconds,
             threshold=threshold,
             silence_prob_threshold=silence_prob_threshold,
             mic_gain=mic_gain,
@@ -244,7 +238,6 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
         pcm = await _collect_until_silence(
             stream,
             silence_seconds=silence_seconds,
-            min_speech_seconds=min_speech_seconds,
             speech_threshold=threshold,
             silence_prob_threshold=silence_prob_threshold,
             mic_gain=mic_gain,
@@ -314,7 +307,6 @@ async def _collect_until_silence(
     stream: AsyncIterable[bytes],
     *,
     silence_seconds: float,
-    min_speech_seconds: float,
     speech_threshold: float,
     silence_prob_threshold: float,
     mic_gain: float,
@@ -414,11 +406,7 @@ async def _collect_until_silence(
                     session_logger.close_collection(audio_bytes=len(recorded))
                     return bytes(recorded)
 
-            if (
-                speech_started
-                and speech_seconds >= min_speech_seconds
-                and trailing_silence >= silence_seconds
-            ):
+            if speech_started and trailing_silence >= silence_seconds:
                 # End-of-speech: returning closes the stream from our side, which
                 # is required because `requires_external_vad=False` means the
                 # pipeline will not send a terminating empty chunk.

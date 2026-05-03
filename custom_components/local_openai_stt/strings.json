@@ -43,7 +43,6 @@
           "prompt": "Prompt",
           "temperature": "Temperature",
           "vad_sensitivity": "End-of-speech sensitivity",
-          "vad_min_speech_seconds": "Minimum speech duration",
           "vad_speech_threshold": "Speech detection threshold",
           "mic_gain": "Microphone gain",
           "debug_log": "Write per-session VAD logs",
@@ -51,7 +50,6 @@
         },
         "data_description": {
           "vad_sensitivity": "How quickly the utterance ends after you stop speaking. Relaxed waits longer, Aggressive cuts off sooner.",
-          "vad_min_speech_seconds": "How much speech must be detected before end-of-speech can fire.",
           "vad_speech_threshold": "Silero VAD probability above which a frame is treated as speech (0–1).",
           "mic_gain": "Software amplification applied to incoming audio before VAD and transcription. Increase if quiet voices are missed; reduce if loud speech sounds distorted.",
           "debug_log": "When on, each STT call writes one log file under <config>/local_openai_stt_sessions/ with per-chunk VAD probabilities. Use for diagnosing 'never ends' problems; turn off when done.",

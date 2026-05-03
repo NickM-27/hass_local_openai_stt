@@ -67,11 +67,10 @@ Once configured, the integration appears as an STT entity that you can select in
 
 ### VAD Tuning
 
-The integration owns end-of-speech detection. Four knobs in the options flow:
+The integration owns end-of-speech detection. Three knobs in the options flow:
 
 - **End-of-speech sensitivity** — `Relaxed` / `Default` / `Aggressive`, matching HA's own values (1.25 s / 0.7 s / 0.25 s of trailing silence). Mirrors `homeassistant.components.assist_pipeline.vad.VadSensitivity`.
 - **Speech detection threshold** — Silero probability above which a frame is treated as speech. The "silence" threshold is derived as `max(0.1, threshold * 0.4)` so probabilities between the two are treated as "uncertain" and don't cut the sentence off mid-utterance.
-- **Minimum speech duration** — how much accumulated speech must be observed before end-of-speech can fire. Guards against ending the recording on a single click, breath, or one-word false start. Default 0.3 s.
 - **Microphone gain** — software amplification applied to incoming audio before VAD _and_ before the Whisper request. Increase if quiet voices are missed; decrease if loud speech sounds distorted.
 
 If VAD never confidently detects speech, a hardcoded 5-second timeout still ships the buffered audio to Whisper. Long utterances are unbounded as long as voice activity continues.

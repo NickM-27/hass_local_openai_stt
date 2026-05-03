@@ -113,7 +113,6 @@ def open_session_logger(
     chunk_samples: int,
     chunk_bytes: int,
     silence_seconds: float,
-    min_speech_seconds: float,
     threshold: float,
     silence_prob_threshold: float,
     mic_gain: float,
@@ -155,7 +154,6 @@ def open_session_logger(
         f"# vad: chunk_samples={chunk_samples} chunk_bytes={chunk_bytes} "
         f"threshold={threshold:.3f} silence_prob={silence_prob_threshold:.3f} "
         f"silence_seconds={silence_seconds:.3f} "
-        f"min_speech_seconds={min_speech_seconds:.3f} "
         f"mic_gain={mic_gain:.2f}\n"
     )
     return SessionLogger(fp=fp, t0=t0)

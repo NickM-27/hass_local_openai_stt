@@ -36,7 +36,6 @@ from .const import (
     CONF_MODEL,
     CONF_PROMPT,
     CONF_TEMPERATURE,
-    CONF_VAD_MIN_SPEECH_SECONDS,
     CONF_VAD_SENSITIVITY,
     CONF_VAD_SPEECH_THRESHOLD,
     DEFAULT_API_KEY,
@@ -46,7 +45,6 @@ from .const import (
     DEFAULT_MIC_GAIN,
     DEFAULT_PROMPT,
     DEFAULT_TEMPERATURE,
-    DEFAULT_VAD_MIN_SPEECH_SECONDS,
     DEFAULT_VAD_SENSITIVITY,
     DEFAULT_VAD_SPEECH_THRESHOLD,
     DOMAIN,
@@ -209,21 +207,6 @@ class LocalOpenAISTTOptionsFlow(OptionsFlow):
                         options=[s.value for s in VadSensitivity],
                         mode=SelectSelectorMode.DROPDOWN,
                         translation_key=CONF_VAD_SENSITIVITY,
-                    )
-                ),
-                vol.Optional(
-                    CONF_VAD_MIN_SPEECH_SECONDS,
-                    default=cur.get(
-                        CONF_VAD_MIN_SPEECH_SECONDS,
-                        DEFAULT_VAD_MIN_SPEECH_SECONDS,
-                    ),
-                ): NumberSelector(
-                    NumberSelectorConfig(
-                        min=0.0,
-                        max=2.0,
-                        step=0.1,
-                        mode=NumberSelectorMode.BOX,
-                        unit_of_measurement="s",
                     )
                 ),
                 vol.Optional(
