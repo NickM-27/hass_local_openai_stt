@@ -1,171 +1,86 @@
-# Local OpenAI STT
+# Local OpenAI STT <small>_(Custom Integration for Home Assistant)_</small>
 
-A Home Assistant custom integration that turns any local OpenAI-compatible
-speech-to-text server (faster-whisper-server, whisper.cpp `server`, LocalAI,
-vLLM-whisper, openedai-whisper, etc.) into a Home Assistant voice STT
-provider.
+**Allows use of generic OpenAI-compatible speech-to-text services, such as (but not limited to):**
 
-Unlike the built-in cloud OpenAI integration, this one:
+- faster-whisper-server / speaches
+- whisper.cpp `server`
+- LocalAI
+- vLLM (Whisper)
+- openedai-whisper
 
-- Talks to a server you run yourself, on your LAN.
-- Performs **its own end-of-speech detection** using
-  [Silero VAD](https://github.com/snakers4/silero-vad), so the Home Assistant
-  Assist pipeline does not run a second VAD on top of yours. This is enabled by
-  the `SpeechAudioProcessing.requires_external_vad` flag added in
-  [home-assistant/core#167246](https://github.com/home-assistant/core/pull/167246).
+**Highlights:**
 
-## Requirements
+- Sets `requires_external_vad=False` per [home-assistant/core#167246](https://github.com/home-assistant/core/pull/167246), so the Assist pipeline does not run a second VAD on top of this integration's own.
+- Internal end-of-speech detection using [Silero VAD](https://github.com/snakers4/silero-vad) via [pysilero-vad](https://github.com/rhasspy/pysilero-vad).
+- Hysteresis-based segmentation so quiet mid-sentence dips do not cut the utterance off.
+- Hardcoded 5-second fallback that still ships audio to Whisper if VAD never declares speech.
+- Configurable end-of-speech sensitivity matching HA's `Relaxed` / `Default` / `Aggressive` levels.
+- Configurable software microphone gain for setups where the satellite's audio is too quiet.
+- Custom prompt and temperature per request.
+- Per-session VAD diagnostic logs you can opt into when tuning.
 
-- Home Assistant **2026.5** or newer (must include core PR #167246).
-- A reachable OpenAI-compatible STT endpoint, e.g. one of:
-  - [faster-whisper-server](https://github.com/fedirz/faster-whisper-server)
-    / [speaches](https://github.com/speaches-ai/speaches)
-  - [whisper.cpp `server`](https://github.com/ggerganov/whisper.cpp/tree/master/examples/server)
-  - [LocalAI](https://localai.io/features/audio-to-text/)
-  - [vLLM with Whisper](https://docs.vllm.ai/)
-  - [openedai-whisper](https://github.com/matatonic/openedai-whisper)
-
-### Platform support
-
-The integration depends on `pysilero-vad==3.0.1`, which ships native wheels
-for:
-
-| Platform | Wheel available |
-|---|---|
-| Linux x86_64 (manylinux) | yes |
-| Linux aarch64 (manylinux) | yes |
-| macOS arm64 | yes |
-| Windows x86_64 | yes |
-| Linux musllinux (Home Assistant OS) | **no** |
-| Linux armv7 | **no** |
-
-Most users running Home Assistant Container or Supervised on Debian-based
-hosts (including Raspberry Pi OS 64-bit) are fine. Home Assistant OS uses
-Alpine/musl and currently has no wheel; on those installs the requirement
-will fail to install until upstream ships a musllinux wheel.
+---
 
 ## Installation
 
-### HACS (recommended)
+### Install via HACS (recommended)
 
-1. In HACS, go to **Integrations** -> the three-dot menu -> **Custom
-   repositories**.
-2. Add `https://github.com/nickmowen/hass_local_openai_stt` as an
-   **Integration**.
-3. Install **Local OpenAI STT** from HACS.
-4. Restart Home Assistant.
+Have [HACS](https://hacs.xyz/) installed; this will allow you to update easily.
 
-### Manual
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=nickmowen&repository=hass_local_openai_stt&category=integration)
 
-Copy `custom_components/local_openai_stt/` into your Home Assistant
-`config/custom_components/` directory and restart.
+> [!NOTE]
+> If the button above doesn't work, add `https://github.com/nickmowen/hass_local_openai_stt` as a custom repository of type Integration in HACS.
 
-## Configuration
+- Click install on the `Local OpenAI STT` integration.
+- Restart Home Assistant.
 
-After install, go to **Settings -> Devices & services -> Add integration ->
-Local OpenAI STT**.
+<details><summary>Manual Install</summary>
 
-### Step 1: connect
+- Copy the `local_openai_stt` folder from [latest release](https://github.com/nickmowen/hass_local_openai_stt/releases/latest) to the [`custom_components` folder](https://developers.home-assistant.io/docs/creating_integration_file_structure/#where-home-assistant-looks-for-integrations) in your config directory.
+- Restart Home Assistant.
 
-| Field | Description |
-|---|---|
-| Base URL | Full URL of the server's OpenAI API root, e.g. `http://localhost:8000/v1` |
-| API key | Optional. Many local servers ignore this; leave blank if yours does. |
+</details>
 
-The integration calls `GET /v1/models` to verify the connection and to
-populate the model picker on the next step. If the server does not implement
-`/v1/models`, you can still continue and type the model name as free text.
+> [!NOTE]
+> Requires a Home Assistant version that includes [#167246](https://github.com/home-assistant/core/pull/167246) (2026.5 or newer). The integration depends on `pysilero-vad`, which only ships wheels for manylinux x86_64/aarch64, macOS arm64, and Windows. Home Assistant OS (Alpine/musl) is not currently supported.
 
-### Step 2: STT settings
+## Integration Configuration
 
-| Field | Description |
-|---|---|
-| Model | Whisper model to transcribe with (e.g. `Systran/faster-whisper-large-v3`, `whisper-1`). Picked from the server's `/v1/models` list, or typed directly. |
-| Prompt | Optional bias text passed with each request. Useful for unusual vocabulary, names, or acronyms. |
-| Temperature | Sampling temperature (0 – 1). 0 is deterministic. |
+After installation, configure the integration through Home Assistant's UI:
 
-After saving, the integration appears as an STT entity that you can select
-in any **Voice Assistant** pipeline (Settings -> Voice assistants).
+1. Go to `Settings` → `Devices & Services`.
+2. Click `Add Integration`.
+3. Search for `Local OpenAI STT`.
+4. Enter the base URL of your OpenAI-compatible server and (optionally) an API key.
+5. Pick the model, prompt, and temperature.
 
-### Options (post-setup)
+Once configured, the integration appears as an STT entity that you can select in any **Voice Assistant** pipeline (Settings → Voice assistants).
 
-Open the integration and click **Configure** to retune any of the above and
-to adjust the internal VAD:
+### Configuration Notes
 
-| Field | Default | Description |
-|---|---|---|
-| End-of-speech silence | 0.8 s | Trailing silence required to end the utterance. |
-| Minimum speech duration | 0.3 s | Speech detected before end-of-speech can fire. Avoids ending on a click or short noise. |
-| Speech detection threshold | 0.5 | Silero VAD probability above which a frame is considered speech (0 - 1). Lower if it stops too early on quiet voices; raise if room noise keeps it open. |
+- The Base URL must be the OpenAI-compatible API root, typically ending in `/v1`.
+- The API key is optional; many local servers ignore it. If your server requires one, supply it here.
+- The model selector is populated from `GET /v1/models`. If your server doesn't implement that endpoint, the model field falls back to a free-text input — type the model name your server expects.
+- The Prompt is sent as the Whisper `prompt` field on every request. Useful for biasing toward unusual vocabulary, names, or acronyms.
+- Language is derived from the active pipeline's `metadata.language` (sent to Whisper as ISO-639-1, e.g. `en` from `en-US`).
 
-## How the audio path works
+### VAD Tuning
 
-```
-Voice satellite (mic)
-  -> Home Assistant Assist pipeline (skips its VoiceCommandSegmenter)
-      -> Local OpenAI STT entity
-          -> Silero VAD: stop when trailing silence > threshold
-          -> POST /v1/audio/transcriptions
-              -> Whisper text back into the pipeline
-```
+The integration owns end-of-speech detection. Four knobs in the options flow:
 
-The pipeline streams 16 kHz mono int16 PCM. The integration runs Silero VAD
-on 32 ms (512-sample) chunks, accumulates the audio, and once it has seen at
-least `vad_min_speech_seconds` of speech followed by `vad_silence_seconds`
-of silence, trims trailing silence to ~200 ms, wraps the PCM in a WAV
-container, and POSTs to the server's `audio.transcriptions` endpoint with
-the configured `model`, `prompt`, `temperature`, and language hint derived
-from the pipeline metadata.
+- **End-of-speech sensitivity** — `Relaxed` / `Default` / `Aggressive`, matching HA's own values (1.25 s / 0.7 s / 0.25 s of trailing silence). Mirrors `homeassistant.components.assist_pipeline.vad.VadSensitivity`.
+- **Speech detection threshold** — Silero probability above which a frame is treated as speech. The "silence" threshold is derived as `max(0.1, threshold * 0.4)` so probabilities between the two are treated as "uncertain" and don't cut the sentence off mid-utterance.
+- **Minimum speech duration** — how much accumulated speech must be observed before end-of-speech can fire. Guards against ending the recording on a single click, breath, or one-word false start. Default 0.3 s.
+- **Microphone gain** — software amplification applied to incoming audio before VAD _and_ before the Whisper request. Increase if quiet voices are missed; decrease if loud speech sounds distorted.
 
-## Troubleshooting
+If VAD never confidently detects speech, a hardcoded 5-second timeout still ships the buffered audio to Whisper. Long utterances are unbounded as long as voice activity continues.
 
-### Stream never ends
+### Diagnostic Logs
 
-Enable debug logging:
+Enable `Write per-session VAD logs` in the options flow to dump one log file per STT request to `<config>/local_openai_stt_sessions/<ISO-timestamp>.log`. Each file records every VAD chunk's probability, classification, and accumulated speech/silence — useful when tuning thresholds for an unusual room or microphone. Older sessions are pruned automatically once you exceed the keep count.
 
-```yaml
-logger:
-  logs:
-    custom_components.local_openai_stt: debug
-```
+## Acknowledgements
 
-When end-of-speech fires you will see a line like:
-
-```
-End of speech: 1.43s speech, 0.83s trailing silence, 53760 bytes
-```
-
-If you never see that line, VAD is not declaring silence. Common causes:
-
-- Mic auto-gain is amplifying room noise above the speech threshold. Raise
-  the threshold, or disable the satellite's auto-gain.
-- The user spoke for less than `vad_min_speech_seconds`. Lower it, or speak
-  longer.
-
-### `RequirementsNotFound: ['pysilero-vad==3.0.1']`
-
-You are likely on Home Assistant OS or armv7 — no wheel exists for those
-platforms. See [Platform support](#platform-support).
-
-### Models dropdown is empty
-
-The server probably does not implement `/v1/models`. The model field falls
-back to a free-text input — type the model name your server expects.
-
-### Wrong or empty transcription
-
-- Confirm the language hint matches what your server expects. The
-  integration sends ISO-639-1 (`en`, not `en-US`) derived from
-  `metadata.language`.
-- Try `temperature: 0`.
-- Verify the server transcribes the same WAV correctly via `curl`:
-
-  ```sh
-  curl http://localhost:8000/v1/audio/transcriptions \
-    -F file=@sample.wav \
-    -F model=Systran/faster-whisper-large-v3
-  ```
-
-## License
-
-MIT.
+- [Home Assistant](https://www.home-assistant.io/) and the assist pipeline team for [#167246](https://github.com/home-assistant/core/pull/167246), which made this kind of STT-side VAD ownership possible.
+- [Silero](https://github.com/snakers4/silero-vad) for the VAD model, and [Rhasspy](https://github.com/rhasspy/pysilero-vad) for the Python packaging.
