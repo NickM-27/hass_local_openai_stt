@@ -58,6 +58,7 @@ class SessionLogger:
         *,
         index: int,
         prob: float,
+        state: str,
         speech_started: bool,
         speech_seconds: float,
         trailing_silence: float,
@@ -70,10 +71,9 @@ class SessionLogger:
             self._min_prob = prob
         if prob > self._max_prob:
             self._max_prob = prob
-        is_speech = "speech" if prob >= 0.5 else "silence"
         self._fp.write(
             f"t={time.monotonic() - self._t0:.3f} "
-            f"CHUNK i={index} prob={prob:.3f} {is_speech} "
+            f"CHUNK i={index} prob={prob:.3f} {state} "
             f"speech_started={speech_started} "
             f"speech_total={speech_seconds:.3f} "
             f"trailing_silence={trailing_silence:.3f}\n"
@@ -115,6 +115,7 @@ def open_session_logger(
     silence_seconds: float,
     min_speech_seconds: float,
     threshold: float,
+    silence_prob_threshold: float,
     mic_gain: float,
 ) -> SessionLogger:
     """Open a per-session log file if debug logging is enabled.
@@ -152,7 +153,7 @@ def open_session_logger(
         f"# sample_rate={metadata.sample_rate} channel={metadata.channel} "
         f"codec={metadata.codec} format={metadata.format}\n"
         f"# vad: chunk_samples={chunk_samples} chunk_bytes={chunk_bytes} "
-        f"threshold={threshold:.3f} "
+        f"threshold={threshold:.3f} silence_prob={silence_prob_threshold:.3f} "
         f"silence_seconds={silence_seconds:.3f} "
         f"min_speech_seconds={min_speech_seconds:.3f} "
         f"mic_gain={mic_gain:.2f}\n"

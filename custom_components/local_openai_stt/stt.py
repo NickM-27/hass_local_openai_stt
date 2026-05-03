@@ -225,6 +225,7 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             opts.get(CONF_VAD_SPEECH_THRESHOLD, DEFAULT_VAD_SPEECH_THRESHOLD)
         )
         mic_gain = float(opts.get(CONF_MIC_GAIN, DEFAULT_MIC_GAIN))
+        silence_prob_threshold = max(0.1, threshold * 0.4)
 
         session_logger = open_session_logger(
             hass=self.hass,
@@ -236,6 +237,7 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             silence_seconds=silence_seconds,
             min_speech_seconds=min_speech_seconds,
             threshold=threshold,
+            silence_prob_threshold=silence_prob_threshold,
             mic_gain=mic_gain,
         )
 
@@ -244,6 +246,7 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             silence_seconds=silence_seconds,
             min_speech_seconds=min_speech_seconds,
             speech_threshold=threshold,
+            silence_prob_threshold=silence_prob_threshold,
             mic_gain=mic_gain,
             session_logger=session_logger,
         )
@@ -313,6 +316,7 @@ async def _collect_until_silence(
     silence_seconds: float,
     min_speech_seconds: float,
     speech_threshold: float,
+    silence_prob_threshold: float,
     mic_gain: float,
     session_logger: SessionLogger,
 ) -> bytes:
@@ -326,6 +330,13 @@ async def _collect_until_silence(
 
     ``mic_gain`` is applied to each chunk before VAD *and* before recording,
     so Whisper sees the same boosted audio Silero used for its decision.
+
+    Hysteresis: ``speech_threshold`` decides "this is clearly speech"
+    (resets trailing-silence). ``silence_prob_threshold`` (lower) decides
+    "this is clearly silence" (accumulates trailing-silence). Probabilities
+    between the two are "uncertain" and leave the state alone — that
+    prevents sentences from being cut off when the user's voice naturally
+    dips through the speech threshold mid-utterance.
     """
     vad = SileroVoiceActivityDetector()
     recorded = bytearray()
@@ -365,6 +376,13 @@ async def _collect_until_silence(
             prob = vad(frame)
 
             if prob >= speech_threshold:
+                state = "speech"
+            elif prob < silence_prob_threshold:
+                state = "silence"
+            else:
+                state = "uncertain"
+
+            if state == "speech":
                 if not speech_started:
                     session_logger.write_event(
                         f"SPEECH_START prob={prob:.3f} chunk_index={chunk_index}"
@@ -372,12 +390,14 @@ async def _collect_until_silence(
                 speech_started = True
                 speech_seconds += VAD_CHUNK_SECONDS
                 trailing_silence = 0.0
-            elif speech_started:
+            elif state == "silence" and speech_started:
                 trailing_silence += VAD_CHUNK_SECONDS
+            # "uncertain" while in speech: hold state, neither reset nor accumulate.
 
             session_logger.log_chunk(
                 index=chunk_index,
                 prob=prob,
+                state=state,
                 speech_started=speech_started,
                 speech_seconds=speech_seconds,
                 trailing_silence=trailing_silence,
