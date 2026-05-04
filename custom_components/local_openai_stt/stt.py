@@ -66,6 +66,18 @@ VAD_CHUNK_SECONDS = SAMPLES_PER_VAD_CHUNK / SAMPLE_RATE
 # as long as voice activity continues.
 NO_SPEECH_TIMEOUT_SECONDS = 5.0
 
+# Cumulative speech-frame time required to latch SPEECH_START. A single
+# 32 ms transient (click, breath, lip noise) won't cross this floor, so it
+# can't latch a session. Matches Home Assistant assist_pipeline's
+# ``VoiceCommandSegmenter.speech_seconds`` default.
+MIN_SPEECH_SECONDS_TO_LATCH = 0.3
+
+# Minimum post-latch duration before end-of-speech may fire. Combined with
+# the latch floor above this gives ~1.0 s of guaranteed listening even for
+# very brief utterances ("uh", "yes"). Matches HA assist_pipeline's
+# effective post-latch floor (``command_seconds - speech_seconds``).
+MIN_POST_LATCH_SECONDS = 0.7
+
 
 SUPPORTED_LANGUAGES: list[str] = [
     "af",
@@ -329,6 +341,14 @@ async def _collect_until_silence(
     between the two are "uncertain" and leave the state alone — that
     prevents sentences from being cut off when the user's voice naturally
     dips through the speech threshold mid-utterance.
+
+    Onset debounce: SPEECH_START doesn't latch on the first speech frame.
+    We accumulate speech-frame time in ``pending_speech_seconds`` and only
+    latch once it crosses ``MIN_SPEECH_SECONDS_TO_LATCH``. A clear silence
+    frame before that resets the counter, so single-frame transients can't
+    flip the state. Once latched, ``MIN_POST_LATCH_SECONDS`` is a floor on
+    how soon end-of-speech may fire, so very short utterances aren't cut
+    off before Whisper has anything to work with.
     """
     vad = SileroVoiceActivityDetector()
     recorded = bytearray()
@@ -337,6 +357,8 @@ async def _collect_until_silence(
     speech_started = False
     speech_seconds = 0.0
     trailing_silence = 0.0
+    pending_speech_seconds = 0.0
+    post_latch_seconds = 0.0
     chunk_index = 0
     last_recv_monotonic: float | None = None
     session_start = time.monotonic()
@@ -375,16 +397,29 @@ async def _collect_until_silence(
                 state = "uncertain"
 
             if state == "speech":
-                if not speech_started:
-                    session_logger.write_event(
-                        f"SPEECH_START prob={prob:.3f} chunk_index={chunk_index}"
-                    )
-                speech_started = True
-                speech_seconds += VAD_CHUNK_SECONDS
-                trailing_silence = 0.0
-            elif state == "silence" and speech_started:
-                trailing_silence += VAD_CHUNK_SECONDS
-            # "uncertain" while in speech: hold state, neither reset nor accumulate.
+                if speech_started:
+                    speech_seconds += VAD_CHUNK_SECONDS
+                    trailing_silence = 0.0
+                else:
+                    pending_speech_seconds += VAD_CHUNK_SECONDS
+                    if pending_speech_seconds >= MIN_SPEECH_SECONDS_TO_LATCH:
+                        speech_started = True
+                        speech_seconds = pending_speech_seconds
+                        trailing_silence = 0.0
+                        session_logger.write_event(
+                            f"SPEECH_START prob={prob:.3f} "
+                            f"chunk_index={chunk_index} "
+                            f"pending_speech={pending_speech_seconds:.3f}"
+                        )
+            elif state == "silence":
+                if speech_started:
+                    trailing_silence += VAD_CHUNK_SECONDS
+                else:
+                    pending_speech_seconds = 0.0
+            # "uncertain": hold state in both phases.
+
+            if speech_started:
+                post_latch_seconds += VAD_CHUNK_SECONDS
 
             session_logger.log_chunk(
                 index=chunk_index,
@@ -406,7 +441,11 @@ async def _collect_until_silence(
                     session_logger.close_collection(audio_bytes=len(recorded))
                     return bytes(recorded)
 
-            if speech_started and trailing_silence >= silence_seconds:
+            if (
+                speech_started
+                and trailing_silence >= silence_seconds
+                and post_latch_seconds >= MIN_POST_LATCH_SECONDS
+            ):
                 # End-of-speech: returning closes the stream from our side, which
                 # is required because `requires_external_vad=False` means the
                 # pipeline will not send a terminating empty chunk.
