@@ -32,16 +32,38 @@ DEFAULT_DEBUG_LOG_KEEP = 20
 
 
 class VadSensitivity(StrEnum):
-    """End-of-speech sensitivity. Mirrors ``homeassistant.components.assist_pipeline.vad.VadSensitivity`` so users see the same Relaxed/Default/Aggressive choices they see elsewhere in HA voice config."""
+    """End-of-speech sensitivity.
 
+    ``DYNAMIC`` grows the trailing-silence threshold with accumulated
+    speech; the other tiers mirror
+    ``homeassistant.components.assist_pipeline.vad.VadSensitivity``
+    (Relaxed/Default/Aggressive) so users see the same fixed-tier
+    choices they see elsewhere in HA voice config.
+    """
+
+    DYNAMIC = "dynamic"
     DEFAULT = "default"
     RELAXED = "relaxed"
     AGGRESSIVE = "aggressive"
 
     @staticmethod
-    def to_seconds(sensitivity: VadSensitivity | str) -> float:
-        """Return the trailing-silence threshold in seconds for the given level."""
+    def to_seconds(
+        sensitivity: VadSensitivity | str, speech_seconds: float = 0.0
+    ) -> float:
+        """Return the trailing-silence threshold in seconds for the given level.
+
+        ``speech_seconds`` is only consulted for :attr:`DYNAMIC`, where short
+        utterances get a snappy cutoff and longer ones get more room for
+        thinking pauses. Piecewise-linear between 1.5 s (floor 0.5 s) and
+        4.0 s (ceiling 1.25 s, matching :attr:`RELAXED`).
+        """
         sensitivity = VadSensitivity(sensitivity)
+        if sensitivity is VadSensitivity.DYNAMIC:
+            if speech_seconds <= 1.5:
+                return 0.5
+            if speech_seconds >= 4.0:
+                return 1.25
+            return 0.5 + (speech_seconds - 1.5) * (1.25 - 0.5) / (4.0 - 1.5)
         if sensitivity is VadSensitivity.RELAXED:
             return 1.25
         if sensitivity is VadSensitivity.AGGRESSIVE:
@@ -49,4 +71,4 @@ class VadSensitivity(StrEnum):
         return 0.7
 
 
-DEFAULT_VAD_SENSITIVITY = VadSensitivity.DEFAULT.value
+DEFAULT_VAD_SENSITIVITY = VadSensitivity.DYNAMIC.value

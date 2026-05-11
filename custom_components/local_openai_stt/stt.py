@@ -227,7 +227,6 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
         """Run VAD, then send the captured utterance to the STT backend."""
         opts = self._opts
         sensitivity = opts.get(CONF_VAD_SENSITIVITY, DEFAULT_VAD_SENSITIVITY)
-        silence_seconds = VadSensitivity.to_seconds(sensitivity)
         threshold = float(
             opts.get(CONF_VAD_SPEECH_THRESHOLD, DEFAULT_VAD_SPEECH_THRESHOLD)
         )
@@ -241,7 +240,7 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             metadata=metadata,
             chunk_samples=SAMPLES_PER_VAD_CHUNK,
             chunk_bytes=BYTES_PER_VAD_CHUNK,
-            silence_seconds=silence_seconds,
+            sensitivity=sensitivity,
             threshold=threshold,
             silence_prob_threshold=silence_prob_threshold,
             mic_gain=mic_gain,
@@ -249,7 +248,7 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
 
         pcm = await _collect_until_silence(
             stream,
-            silence_seconds=silence_seconds,
+            sensitivity=sensitivity,
             speech_threshold=threshold,
             silence_prob_threshold=silence_prob_threshold,
             mic_gain=mic_gain,
@@ -318,7 +317,7 @@ def _apply_gain(pcm: bytes, gain: float) -> bytes:
 async def _collect_until_silence(
     stream: AsyncIterable[bytes],
     *,
-    silence_seconds: float,
+    sensitivity: str,
     speech_threshold: float,
     silence_prob_threshold: float,
     mic_gain: float,
@@ -349,6 +348,11 @@ async def _collect_until_silence(
     flip the state. Once latched, ``MIN_POST_LATCH_SECONDS`` is a floor on
     how soon end-of-speech may fire, so very short utterances aren't cut
     off before Whisper has anything to work with.
+
+    Trailing-silence cutoff is resolved per-frame via
+    :meth:`VadSensitivity.to_seconds`; for the ``DYNAMIC`` tier this grows
+    with accumulated ``speech_seconds`` so short commands cut off fast and
+    long, thoughtful questions get more pause tolerance.
     """
     vad = SileroVoiceActivityDetector()
     recorded = bytearray()
@@ -441,9 +445,10 @@ async def _collect_until_silence(
                     session_logger.close_collection(audio_bytes=len(recorded))
                     return bytes(recorded)
 
+            silence_cutoff = VadSensitivity.to_seconds(sensitivity, speech_seconds)
             if (
                 speech_started
-                and trailing_silence >= silence_seconds
+                and trailing_silence >= silence_cutoff
                 and post_latch_seconds >= MIN_POST_LATCH_SECONDS
             ):
                 # End-of-speech: returning closes the stream from our side, which
@@ -463,6 +468,7 @@ async def _collect_until_silence(
                 session_logger.write_event(
                     f"END_OF_SPEECH speech_seconds={speech_seconds:.3f} "
                     f"trailing_silence={trailing_silence:.3f} "
+                    f"silence_cutoff={silence_cutoff:.3f} "
                     f"recorded_bytes={len(recorded)} dropped_bytes={max(0, drop)}"
                 )
                 session_logger.close_collection(audio_bytes=len(recorded))
