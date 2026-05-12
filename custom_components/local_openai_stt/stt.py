@@ -261,6 +261,7 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             return SpeechResult(None, SpeechResultState.ERROR)
 
         wav_bytes = _pcm_to_wav(pcm)
+        session_logger.save_audio(wav_bytes)
 
         try:
             text = await self._transcribe(metadata, wav_bytes)

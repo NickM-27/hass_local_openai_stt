@@ -34,9 +34,15 @@ class SessionLogger:
     relative to ``open_session_logger`` being called.
     """
 
-    def __init__(self, fp: io.TextIOBase | None, t0: float) -> None:
+    def __init__(
+        self,
+        fp: io.TextIOBase | None,
+        t0: float,
+        audio_path: Path | None = None,
+    ) -> None:
         self._fp = fp
         self._t0 = t0
+        self._audio_path = audio_path
         self._closed_collection = False
         self._chunk_count = 0
         self._min_prob = 1.0
@@ -78,6 +84,22 @@ class SessionLogger:
             f"speech_total={speech_seconds:.3f} "
             f"trailing_silence={trailing_silence:.3f}\n"
         )
+
+    def save_audio(self, wav_bytes: bytes) -> None:
+        """Write the captured WAV next to the log file for later replay."""
+        if self._audio_path is None or not wav_bytes:
+            return
+        try:
+            self._audio_path.write_bytes(wav_bytes)
+        except OSError as err:
+            _LOGGER.warning("Could not save session audio: %s", err)
+            return
+        if self._fp is not None:
+            self._fp.write(
+                f"t={time.monotonic() - self._t0:.3f} "
+                f"AUDIO_SAVED path={self._audio_path.name} "
+                f"bytes={len(wav_bytes)}\n"
+            )
 
     def close_collection(self, *, audio_bytes: int | None) -> None:
         """Mark the end of the audio-collection phase. Idempotent."""
@@ -137,9 +159,14 @@ def open_session_logger(
                     old.unlink()
                 except OSError:
                     pass
+                try:
+                    old.with_suffix(".wav").unlink(missing_ok=True)
+                except OSError:
+                    pass
 
         started = datetime.now(timezone.utc)
         path = log_dir / f"{started.isoformat()}.log"
+        audio_path = path.with_suffix(".wav")
         fp = path.open("w", encoding="utf-8", buffering=1)
     except OSError as err:
         _LOGGER.warning("Could not create session log file: %s", err)
@@ -156,7 +183,7 @@ def open_session_logger(
         f"sensitivity={sensitivity} "
         f"mic_gain={mic_gain:.2f}\n"
     )
-    return SessionLogger(fp=fp, t0=t0)
+    return SessionLogger(fp=fp, t0=t0, audio_path=audio_path)
 
 
 __all__ = ["SessionLogger", "open_session_logger"]
