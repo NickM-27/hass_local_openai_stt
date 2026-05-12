@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterable
 import io
 import logging
+import math
 import time
 import wave
 
@@ -260,6 +261,8 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             session_logger.close()
             return SpeechResult(None, SpeechResultState.ERROR)
 
+        pcm = _compress_dynamic_range(pcm)
+        session_logger.write_event(f"COMPRESSED bytes={len(pcm)}")
         wav_bytes = _pcm_to_wav(pcm)
         session_logger.save_audio(wav_bytes)
 
@@ -313,6 +316,52 @@ def _apply_gain(pcm: bytes, gain: float) -> bytes:
     arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) * gain
     np.clip(arr, np.iinfo(np.int16).min, np.iinfo(np.int16).max, out=arr)
     return arr.astype(np.int16).tobytes()
+
+
+def _compress_dynamic_range(pcm: bytes) -> bytes:
+    """Boost quiet speech so far-field audio reaches transcribable levels.
+
+    Models sox's ``compand 0.02,0.2 -50,-10,-30,-3 -3``: 20 ms attack /
+    200 ms release envelope follower, piecewise-linear transfer mapping
+    -50 dBFS → -10 dBFS, -30 → -3, 0 → 0, with -3 dB output gain. Pulls
+    -40 dBFS speech up around -10 dBFS while only mildly amplifying the
+    -11 dBFS wake chime. Empirically this is the only single transform
+    that lets the STT backend transcribe both quiet utterances *and* the
+    chime that precedes them; trimming the chime causes the backend to
+    hallucinate text on borderline-quiet audio.
+    """
+    if not pcm:
+        return pcm
+
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    abs_samples = np.abs(samples)
+
+    attack_coef = math.exp(-1.0 / (0.02 * SAMPLE_RATE))
+    release_coef = math.exp(-1.0 / (0.2 * SAMPLE_RATE))
+
+    env = np.empty_like(samples)
+    e = 0.0
+    for i in range(len(samples)):
+        x = abs_samples[i]
+        coef = attack_coef if x > e else release_coef
+        e = coef * e + (1.0 - coef) * x
+        env[i] = e
+
+    env_db = 20.0 * np.log10(np.maximum(env, 1e-10))
+    # Piecewise-linear transfer: (-50, -10) → (-30, -3) → (0, 0).
+    out_db = np.where(
+        env_db <= -50.0,
+        -10.0,
+        np.where(
+            env_db <= -30.0,
+            -10.0 + (env_db + 50.0) * (7.0 / 20.0),
+            -3.0 + (env_db + 30.0) * (3.0 / 30.0),
+        ),
+    )
+    gain = np.power(10.0, (out_db - env_db - 3.0) / 20.0)
+
+    out = np.clip(samples * gain, -1.0, 1.0) * 32767.0
+    return out.astype(np.int16).tobytes()
 
 
 async def _collect_until_silence(
