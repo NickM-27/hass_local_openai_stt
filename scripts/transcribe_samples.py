@@ -1,9 +1,9 @@
 """Send the captured WAV variants to an OpenAI-compatible STT backend.
 
-Reads every WAV under ``scripts/samples`` (and ``scripts/samples/processed``)
-and posts each through the same ``audio.transcriptions.create`` call the
-integration uses, then prints a table of model output per file so we can
-see which preprocessing variants survive transcription.
+Reads every WAV under ``scripts/samples`` and posts each through the same
+``audio.transcriptions.create`` call the integration uses. Files are grouped
+by clip (sharing a base name, e.g. ``foo.wav`` and ``foo.compressed.wav``)
+so the transcription of each variant can be compared side-by-side.
 
 Defaults match the user's running backend. Override via env vars
 ``STT_BASE_URL`` / ``STT_MODEL`` / ``STT_API_KEY`` if needed.
@@ -11,15 +11,15 @@ Defaults match the user's running backend. Override via env vars
 
 from __future__ import annotations
 
-import os
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 from openai import OpenAI, OpenAIError
 
-BASE_URL = os.environ.get("STT_BASE_URL", "https://stt.storagewhacker.com/v1")
-MODEL = os.environ.get("STT_MODEL", "Gemma4-ASR")
-API_KEY = os.environ.get("STT_API_KEY", "not-needed")
+BASE_URL = "https://stt.storagewhacker.com/v1"
+API_KEY = "not-needed"
+MODELS = ("Gemma4-ASR", "Qwen3-ASR")
 
 PROMPT = (
     "You transcribe English voice input for a Home Assistant smart-home "
@@ -33,6 +33,21 @@ PROMPT = (
 
 SAMPLES_DIR = Path(__file__).parent / "samples"
 
+# Suffixes the integration tags onto a clip's stem when it writes a processed
+# variant alongside the plain pass-through. The base WAV (``<clip>.wav``) has
+# no suffix and is reported as ``plain``.
+VARIANT_SUFFIXES = ("compressed",)
+
+
+def variant_of(path: Path) -> tuple[str, str]:
+    """Return ``(clip_id, variant)`` for a sample file."""
+    stem = path.name[: -len(".wav")]
+    for suffix in VARIANT_SUFFIXES:
+        tail = f".{suffix}"
+        if stem.endswith(tail):
+            return stem[: -len(tail)], suffix
+    return stem, "plain"
+
 
 def main() -> int:
     if not SAMPLES_DIR.is_dir():
@@ -45,26 +60,37 @@ def main() -> int:
         return 1
 
     client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
-    print(f"endpoint={BASE_URL} model={MODEL}\n")
+    print(f"endpoint={BASE_URL} models={','.join(MODELS)}\n")
 
-    width = max(len(str(p.relative_to(SAMPLES_DIR))) for p in wavs)
+    groups: dict[str, list[tuple[str, Path]]] = defaultdict(list)
     for p in wavs:
-        rel = str(p.relative_to(SAMPLES_DIR))
-        try:
+        clip_id, variant = variant_of(p)
+        groups[clip_id].append((variant, p))
+
+    for clip_id in sorted(groups):
+        variants = sorted(groups[clip_id], key=lambda vp: (vp[0] != "plain", vp[0]))
+        print(f"clip {clip_id}")
+        v_width = max(len(v) for v, _ in variants)
+        m_width = max(len(m) for m in MODELS)
+        for variant, p in variants:
             with p.open("rb") as fp:
-                result = client.audio.transcriptions.create(
-                    model=MODEL,
-                    file=(p.name, fp.read(), "audio/wav"),
-                    response_format="json",
-                    temperature=0.0,
-                    language="en",
-                    prompt=PROMPT,
-                )
-            text = (getattr(result, "text", "") or "").strip()
-            tag = "OK " if text else "EMPTY"
-            print(f"{rel:<{width}}  {tag}  {text!r}")
-        except OpenAIError as err:
-            print(f"{rel:<{width}}  ERR  {err!r}")
+                data = fp.read()
+            for model in MODELS:
+                try:
+                    result = client.audio.transcriptions.create(
+                        model=model,
+                        file=(p.name, data, "audio/wav"),
+                        response_format="json",
+                        temperature=0.0,
+                        language="en",
+                        prompt=PROMPT,
+                    )
+                    text = (getattr(result, "text", "") or "").strip()
+                    tag = "OK " if text else "EMPTY"
+                    print(f"  {variant:<{v_width}}  {model:<{m_width}}  {tag}  {text!r}")
+                except OpenAIError as err:
+                    print(f"  {variant:<{v_width}}  {model:<{m_width}}  ERR  {err!r}")
+        print()
 
     return 0
 
