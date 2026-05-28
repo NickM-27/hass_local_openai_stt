@@ -6,6 +6,7 @@ from collections.abc import AsyncIterable
 import io
 import logging
 import math
+import re
 import time
 import wave
 
@@ -54,6 +55,12 @@ from .const import (
 from .session_log import SessionLogger, open_session_logger
 
 _LOGGER = logging.getLogger(__name__)
+
+# Qwen3-ASR emits a trained-in prefix like ``language English<asr_text>...`` on
+# every response. The reference servers strip it before returning to the OpenAI
+# client; llama-server's /v1/audio/transcriptions handler does not, so we strip
+# it ourselves. Harmless for other models that never produce the prefix.
+_ASR_LANGUAGE_PREFIX_RE = re.compile(r"^language\s+\S+\s*<asr_text>", re.IGNORECASE)
 
 SAMPLE_RATE = 16000
 SAMPLE_WIDTH = 2  # 16-bit
@@ -334,7 +341,10 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             kwargs["language"] = metadata.language.split("-")[0]
 
         result = await client.audio.transcriptions.create(**kwargs)
-        return getattr(result, "text", None)
+        text = getattr(result, "text", None)
+        if text is None:
+            return None
+        return _ASR_LANGUAGE_PREFIX_RE.sub("", text).strip()
 
 
 def _apply_gain(pcm: bytes, gain: float) -> bytes:
