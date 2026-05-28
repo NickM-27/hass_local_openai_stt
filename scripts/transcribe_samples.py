@@ -11,11 +11,18 @@ Defaults match the user's running backend. Override via env vars
 
 from __future__ import annotations
 
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
 
 from openai import OpenAI, OpenAIError
+
+# Qwen3-ASR emits a trained-in prefix like ``language English<asr_text>...`` on
+# every response. The reference servers (vLLM, qwen-asr-server) strip it before
+# returning to the client, but llama-server's /v1/audio/transcriptions handler
+# doesn't, so we strip it here.
+QWEN_ASR_PREFIX = re.compile(r"^language\s+\S+\s*<asr_text>", re.IGNORECASE)
 
 BASE_URL = "https://stt.storagewhacker.com/v1"
 API_KEY = "not-needed"
@@ -86,6 +93,7 @@ def main() -> int:
                         prompt=PROMPT,
                     )
                     text = (getattr(result, "text", "") or "").strip()
+                    text = QWEN_ASR_PREFIX.sub("", text).strip()
                     tag = "OK " if text else "EMPTY"
                     print(f"  {variant:<{v_width}}  {model:<{m_width}}  {tag}  {text!r}")
                 except OpenAIError as err:
