@@ -85,19 +85,30 @@ class SessionLogger:
             f"trailing_silence={trailing_silence:.3f}\n"
         )
 
-    def save_audio(self, wav_bytes: bytes) -> None:
-        """Write the captured WAV next to the log file for later replay."""
+    def save_audio(self, wav_bytes: bytes, *, variant: str | None = None) -> None:
+        """Write the captured WAV next to the log file for later replay.
+
+        ``variant`` adds an infix before ``.wav`` (e.g. ``"compressed"`` →
+        ``<stem>.compressed.wav``) so multiple takes from one session can be
+        saved side by side.
+        """
         if self._audio_path is None or not wav_bytes:
             return
+        if variant:
+            path = self._audio_path.with_name(
+                f"{self._audio_path.stem}.{variant}{self._audio_path.suffix}"
+            )
+        else:
+            path = self._audio_path
         try:
-            self._audio_path.write_bytes(wav_bytes)
+            path.write_bytes(wav_bytes)
         except OSError as err:
             _LOGGER.warning("Could not save session audio: %s", err)
             return
         if self._fp is not None:
             self._fp.write(
                 f"t={time.monotonic() - self._t0:.3f} "
-                f"AUDIO_SAVED path={self._audio_path.name} "
+                f"AUDIO_SAVED path={path.name} "
                 f"bytes={len(wav_bytes)}\n"
             )
 
@@ -159,10 +170,11 @@ def open_session_logger(
                     old.unlink()
                 except OSError:
                     pass
-                try:
-                    old.with_suffix(".wav").unlink(missing_ok=True)
-                except OSError:
-                    pass
+                for wav_file in log_dir.glob(f"{old.stem}*.wav"):
+                    try:
+                        wav_file.unlink()
+                    except OSError:
+                        pass
 
         started = datetime.now(timezone.utc)
         path = log_dir / f"{started.isoformat()}.log"

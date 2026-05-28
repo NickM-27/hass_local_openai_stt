@@ -261,8 +261,6 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             session_logger.close()
             return SpeechResult(None, SpeechResultState.ERROR)
 
-        pcm = _compress_dynamic_range(pcm)
-        session_logger.write_event(f"COMPRESSED bytes={len(pcm)}")
         wav_bytes = _pcm_to_wav(pcm)
         session_logger.save_audio(wav_bytes)
 
@@ -278,6 +276,36 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             session_logger.write_event("RESULT no_text")
             session_logger.close()
             return SpeechResult(None, SpeechResultState.ERROR)
+
+        # Backend heard nothing — retry once with dynamic-range compression
+        # to rescue quiet / far-field speech the first pass missed.
+        if not text.strip():
+            session_logger.write_event("FALLBACK_COMPRESS reason=no_audio_heard")
+            compressed_pcm = _compress_dynamic_range(pcm)
+            session_logger.write_event(f"COMPRESSED bytes={len(compressed_pcm)}")
+            compressed_wav = _pcm_to_wav(compressed_pcm)
+            session_logger.save_audio(compressed_wav, variant="compressed")
+
+            try:
+                text = await self._transcribe(metadata, compressed_wav)
+            except OpenAIError as err:
+                _LOGGER.error("Transcription (compressed retry) failed: %s", err)
+                session_logger.write_event(
+                    f"RESULT transcription_error_compressed: {err!r}"
+                )
+                session_logger.close()
+                return SpeechResult(None, SpeechResultState.ERROR)
+
+            if text is None:
+                session_logger.write_event("RESULT no_text_compressed")
+                session_logger.close()
+                return SpeechResult(None, SpeechResultState.ERROR)
+
+            session_logger.write_event(
+                f"RESULT ok_compressed text={text!r} chars={len(text)}"
+            )
+            session_logger.close()
+            return SpeechResult(text, SpeechResultState.SUCCESS)
 
         session_logger.write_event(f"RESULT ok text={text!r} chars={len(text)}")
         session_logger.close()
