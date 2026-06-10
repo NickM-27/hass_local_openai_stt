@@ -6,7 +6,7 @@
 - whisper.cpp `server`
 - LocalAI
 - vLLM (Whisper)
-- openedai-whisper
+- openai-whisper
 
 **Highlights:**
 
@@ -27,7 +27,7 @@
 
 Have [HACS](https://hacs.xyz/) installed; this will allow you to update easily.
 
-[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=nickmowen&repository=hass_local_openai_stt&category=integration)
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=NickM-27&repository=hass_local_openai_stt&category=integration)
 
 > [!NOTE]
 > If the button above doesn't work, add `https://github.com/NickM-27/hass_local_openai_stt` as a custom repository of type Integration in HACS.
