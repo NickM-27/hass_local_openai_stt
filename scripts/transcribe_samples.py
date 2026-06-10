@@ -3,10 +3,10 @@
 Reads every WAV under ``scripts/samples`` and posts each through the same
 ``audio.transcriptions.create`` call the integration uses. Files are grouped
 by clip (sharing a base name, e.g. ``foo.wav`` and ``foo.compressed.wav``)
-so the transcription of each variant can be compared side-by-side.
+so the transcription of each variant can be compared side-by-side, across
+every configured backend.
 
-Defaults match the user's running backend. Override via env vars
-``STT_BASE_URL`` / ``STT_MODEL`` / ``STT_API_KEY`` if needed.
+Add entries to ``BACKENDS`` to compare multiple endpoints/models at once.
 """
 
 from __future__ import annotations
@@ -24,9 +24,14 @@ from openai import OpenAI, OpenAIError
 # doesn't, so we strip it here.
 QWEN_ASR_PREFIX = re.compile(r"^language\s+\S+\s*<asr_text>", re.IGNORECASE)
 
-BASE_URL = "https://stt.storagewhacker.com/v1"
 API_KEY = "not-needed"
-MODELS = ("Gemma4-ASR", "Qwen3-ASR")
+
+# Backends to transcribe each clip through, keyed by base URL with the model to
+# request from that endpoint. Add entries here to compare several at once.
+BACKENDS: dict[str, str] = {
+    "https://chat.storagewhacker.com/v1": "Qwen3-ASR",
+    "http://192.168.50.106:11100/v1": "parakeet-cpp-nemotron-3.5-asr-streaming-0.6b",
+}
 
 PROMPT = (
     "You transcribe English voice input for a Home Assistant smart-home "
@@ -66,23 +71,33 @@ def main() -> int:
         print(f"no WAV files under {SAMPLES_DIR}", file=sys.stderr)
         return 1
 
-    client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
-    print(f"endpoint={BASE_URL} models={','.join(MODELS)}\n")
+    if not BACKENDS:
+        print("no backends configured in BACKENDS", file=sys.stderr)
+        return 1
+
+    # One client per endpoint, paired with its model and a display label.
+    backends = [
+        (model, base_url, OpenAI(base_url=base_url, api_key=API_KEY))
+        for base_url, model in BACKENDS.items()
+    ]
+    for model, base_url, _ in backends:
+        print(f"backend {model} @ {base_url}")
+    print()
 
     groups: dict[str, list[tuple[str, Path]]] = defaultdict(list)
     for p in wavs:
         clip_id, variant = variant_of(p)
         groups[clip_id].append((variant, p))
 
+    m_width = max(len(model) for model, _, _ in backends)
     for clip_id in sorted(groups):
         variants = sorted(groups[clip_id], key=lambda vp: (vp[0] != "plain", vp[0]))
         print(f"clip {clip_id}")
         v_width = max(len(v) for v, _ in variants)
-        m_width = max(len(m) for m in MODELS)
         for variant, p in variants:
             with p.open("rb") as fp:
                 data = fp.read()
-            for model in MODELS:
+            for model, _, client in backends:
                 try:
                     result = client.audio.transcriptions.create(
                         model=model,
