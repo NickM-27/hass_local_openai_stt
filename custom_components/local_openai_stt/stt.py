@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterable
+from functools import partial
 import io
 import logging
 import math
@@ -213,13 +214,21 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             prefers_noise_reduction_enabled=True,
         )
 
-    def _get_client(self) -> AsyncOpenAI:
-        """Return a cached AsyncOpenAI client pointed at the configured server."""
+    async def _get_client(self) -> AsyncOpenAI:
+        """Return a cached AsyncOpenAI client pointed at the configured server.
+
+        The ``AsyncOpenAI`` constructor builds an httpx client, which loads the
+        system CA bundle from disk (a blocking call). Run it in the executor so
+        we don't block the event loop.
+        """
         if self._client is None:
             opts = self._opts
-            self._client = AsyncOpenAI(
-                base_url=opts[CONF_BASE_URL],
-                api_key=opts.get(CONF_API_KEY) or DEFAULT_API_KEY,
+            self._client = await self.hass.async_add_executor_job(
+                partial(
+                    AsyncOpenAI,
+                    base_url=opts[CONF_BASE_URL],
+                    api_key=opts.get(CONF_API_KEY) or DEFAULT_API_KEY,
+                )
             )
         return self._client
 
@@ -323,7 +332,7 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
     ) -> str | None:
         """POST the WAV to the OpenAI-compatible transcription endpoint."""
         opts = self._opts
-        client = self._get_client()
+        client = await self._get_client()
 
         kwargs: dict = {
             "model": opts[CONF_MODEL],
