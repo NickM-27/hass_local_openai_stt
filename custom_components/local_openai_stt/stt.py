@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterable
 from functools import partial
+import ctypes
 import io
 import logging
 import math
+from pathlib import Path
+import platform
 import re
+import sys
 import time
 import wave
 
@@ -57,6 +61,31 @@ from .const import (
 from .session_log import SessionLogger, open_session_logger
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _preload_ten_vad_deps() -> None:
+    """Preload ten-vad's LLVM libc++ dependencies (linux/x86_64 only).
+
+    ten-vad's ``libten_vad.so`` is linked against LLVM ``libc++``/``libc++abi``
+    (plus LLVM ``libunwind``), which the Home Assistant container does not ship.
+    We bundle those libraries and load them here, in dependency order, with
+    ``RTLD_GLOBAL`` so the loader resolves them by SONAME when ``TenVad`` loads
+    its native lib. No-op on other platforms (amd64/glibc only for now).
+    """
+    if sys.platform != "linux" or platform.machine() != "x86_64":
+        return
+    lib_dir = Path(__file__).parent / "lib" / "linux_x86_64"
+    for name in ("libunwind.so.1", "libc++abi.so.1", "libc++.so.1"):
+        path = lib_dir / name
+        if not path.is_file():
+            continue
+        try:
+            ctypes.CDLL(str(path), mode=ctypes.RTLD_GLOBAL)
+        except OSError as err:
+            _LOGGER.warning("Failed to preload %s for ten-vad: %s", name, err)
+
+
+_preload_ten_vad_deps()
 
 # Qwen3-ASR emits a trained-in prefix like ``language English<asr_text>...`` on
 # every response. The reference servers strip it before returning to the OpenAI
