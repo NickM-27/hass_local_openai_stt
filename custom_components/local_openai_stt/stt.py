@@ -13,7 +13,7 @@ import wave
 
 import numpy as np
 from openai import AsyncOpenAI, OpenAIError
-from pysilero_vad import SileroVoiceActivityDetector
+from ten_vad import TenVad
 
 from homeassistant.components.stt import (
     AudioBitRates,
@@ -41,6 +41,7 @@ from .const import (
     CONF_PROMPT,
     CONF_TEMPERATURE,
     CONF_VAD_SENSITIVITY,
+    ACTIVE_VAD_PROFILE,
     CONF_VAD_SPEECH_THRESHOLD,
     DEFAULT_API_KEY,
     DEFAULT_DEBUG_LOG,
@@ -65,9 +66,9 @@ _ASR_LANGUAGE_PREFIX_RE = re.compile(r"^language\s+\S+\s*<asr_text>", re.IGNOREC
 
 SAMPLE_RATE = 16000
 SAMPLE_WIDTH = 2  # 16-bit
-# Silero requires exactly 512 samples per call at 16 kHz (~32 ms).
-SAMPLES_PER_VAD_CHUNK = SileroVoiceActivityDetector.chunk_samples()
-BYTES_PER_VAD_CHUNK = SileroVoiceActivityDetector.chunk_bytes()
+# Frame size for the active VAD backend (ten-vad: 256 samples / ~16 ms).
+SAMPLES_PER_VAD_CHUNK = int(ACTIVE_VAD_PROFILE["frame_samples"])
+BYTES_PER_VAD_CHUNK = SAMPLES_PER_VAD_CHUNK * SAMPLE_WIDTH
 VAD_CHUNK_SECONDS = SAMPLES_PER_VAD_CHUNK / SAMPLE_RATE
 
 # How long we keep listening before giving up if VAD never declares speech.
@@ -248,7 +249,10 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             opts.get(CONF_VAD_SPEECH_THRESHOLD, DEFAULT_VAD_SPEECH_THRESHOLD)
         )
         mic_gain = float(opts.get(CONF_MIC_GAIN, DEFAULT_MIC_GAIN))
-        silence_prob_threshold = max(0.1, threshold * 0.4)
+        silence_prob_threshold = max(
+            ACTIVE_VAD_PROFILE["silence_threshold_floor"],
+            threshold * ACTIVE_VAD_PROFILE["silence_threshold_ratio"],
+        )
 
         session_logger = open_session_logger(
             hass=self.hass,
@@ -423,13 +427,13 @@ async def _collect_until_silence(
     """Read PCM frames from the stream until the user stops speaking.
 
     The HA pipeline streams 16 kHz mono int16 PCM. We feed the data through
-    Silero VAD in fixed-size chunks (512 samples / ~32 ms) and stop once we
+    the VAD in fixed-size chunks (``SAMPLES_PER_VAD_CHUNK``) and stop once we
     have observed enough trailing silence after speech to consider the
     utterance complete. If the stream ends before that condition is met, we
     return whatever we have.
 
     ``mic_gain`` is applied to each chunk before VAD *and* before recording,
-    so Whisper sees the same boosted audio Silero used for its decision.
+    so Whisper sees the same boosted audio the VAD used for its decision.
 
     Hysteresis: ``speech_threshold`` decides "this is clearly speech"
     (resets trailing-silence). ``silence_prob_threshold`` (lower) decides
@@ -451,7 +455,7 @@ async def _collect_until_silence(
     with accumulated ``speech_seconds`` so short commands cut off fast and
     long, thoughtful questions get more pause tolerance.
     """
-    vad = SileroVoiceActivityDetector()
+    vad = TenVad(hop_size=SAMPLES_PER_VAD_CHUNK)
     recorded = bytearray()
     leftover = bytearray()
 
@@ -488,7 +492,7 @@ async def _collect_until_silence(
             frame = bytes(leftover[:BYTES_PER_VAD_CHUNK])
             del leftover[:BYTES_PER_VAD_CHUNK]
 
-            prob = vad(frame)
+            prob = float(vad.process(np.frombuffer(frame, dtype=np.int16))[0])
 
             if prob >= speech_threshold:
                 state = "speech"

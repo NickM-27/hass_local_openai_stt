@@ -25,7 +25,33 @@ DEFAULT_API_KEY = "not-needed"
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_PROMPT = ""
 
-DEFAULT_VAD_SPEECH_THRESHOLD = 0.4
+# Per-backend VAD tuning. Each model emits probabilities on its own scale, so
+# frame size and thresholds differ. ``ACTIVE_VAD`` picks the one stt.py uses;
+# old profiles are kept for reference/revert. silence_threshold is derived as
+# max(silence_threshold_floor, speech_threshold * silence_threshold_ratio).
+VAD_PROFILES: dict[str, dict[str, float]] = {
+    # 512-sample frames; misses some far-field speech; has aarch64 wheels.
+    "pysilero": {
+        "frame_samples": 512,
+        "default_speech_threshold": 0.4,
+        "silence_threshold_floor": 0.1,
+        "silence_threshold_ratio": 0.4,
+    },
+    # 256-sample frames; better far-field detection; runs "hot" (silence ~0.15,
+    # far-field speech ~0.4) so high silence floor + lower speech default.
+    # amd64/glibc only -- no ARM/musl native lib.
+    "ten_vad": {
+        "frame_samples": 256,
+        "default_speech_threshold": 0.35,
+        "silence_threshold_floor": 0.28,
+        "silence_threshold_ratio": 0.8,
+    },
+}
+
+ACTIVE_VAD = "ten_vad"
+ACTIVE_VAD_PROFILE = VAD_PROFILES[ACTIVE_VAD]
+
+DEFAULT_VAD_SPEECH_THRESHOLD = ACTIVE_VAD_PROFILE["default_speech_threshold"]
 DEFAULT_MIC_GAIN = 1.0
 DEFAULT_DEBUG_LOG = False
 DEFAULT_DEBUG_LOG_KEEP = 20

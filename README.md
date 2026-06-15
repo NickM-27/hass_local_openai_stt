@@ -11,7 +11,7 @@
 **Highlights:**
 
 - Sets `requires_external_vad=False` per [home-assistant/core#167246](https://github.com/home-assistant/core/pull/167246), so the Assist pipeline does not run a second VAD on top of this integration's own.
-- Internal end-of-speech detection using [Silero VAD](https://github.com/snakers4/silero-vad) via [pysilero-vad](https://github.com/rhasspy/pysilero-vad).
+- Internal end-of-speech detection using [TEN VAD](https://github.com/TEN-framework/ten-vad).
 - Hysteresis-based segmentation so quiet mid-sentence dips do not cut the utterance off.
 - Hardcoded 5-second fallback that still ships audio to Whisper if VAD never declares speech.
 - Configurable end-of-speech sensitivity matching HA's `Relaxed` / `Default` / `Aggressive` levels.
@@ -43,7 +43,7 @@ Have [HACS](https://hacs.xyz/) installed; this will allow you to update easily.
 </details>
 
 > [!NOTE]
-> Requires a Home Assistant version that includes [#167246](https://github.com/home-assistant/core/pull/167246) (2026.5 or newer). The integration depends on `pysilero-vad`, which only ships wheels for manylinux x86_64/aarch64, macOS arm64, and Windows. Home Assistant OS (Alpine/musl) is not currently supported.
+> Requires a Home Assistant version that includes [#167246](https://github.com/home-assistant/core/pull/167246) (2026.5 or newer). The integration depends on `ten-vad`, whose wheel only ships native libraries for **amd64 (x86_64) glibc**, plus Windows and macOS. ARM (Raspberry Pi) and musl-based Home Assistant OS are **not currently supported** — run on an x86_64 HA Container/Supervised/Core install for now. Feedback on broader platform support is welcome.
 
 ## Integration Configuration
 
@@ -70,7 +70,7 @@ Once configured, the integration appears as an STT entity that you can select in
 The integration owns end-of-speech detection. Three knobs in the options flow:
 
 - **End-of-speech sensitivity** — `Relaxed` / `Default` / `Aggressive`, matching HA's own values (1.25 s / 0.7 s / 0.25 s of trailing silence). Mirrors `homeassistant.components.assist_pipeline.vad.VadSensitivity`.
-- **Speech detection threshold** — Silero probability above which a frame is treated as speech. The "silence" threshold is derived as `max(0.1, threshold * 0.4)` so probabilities between the two are treated as "uncertain" and don't cut the sentence off mid-utterance.
+- **Speech detection threshold** — VAD probability above which a frame is treated as speech (default `0.35`). The "silence" threshold is derived as `max(0.28, threshold * 0.8)` so probabilities between the two are treated as "uncertain" and don't cut the sentence off mid-utterance.
 - **Microphone gain** — software amplification applied to incoming audio before VAD _and_ before the Whisper request. Increase if quiet voices are missed; decrease if loud speech sounds distorted.
 
 If VAD never confidently detects speech, a hardcoded 5-second timeout still ships the buffered audio to Whisper. Long utterances are unbounded as long as voice activity continues.
@@ -82,4 +82,4 @@ Enable `Write per-session VAD logs` in the options flow to dump one log file per
 ## Acknowledgements
 
 - [Home Assistant](https://www.home-assistant.io/) and the assist pipeline team for [#167246](https://github.com/home-assistant/core/pull/167246), which made this kind of STT-side VAD ownership possible.
-- [Silero](https://github.com/snakers4/silero-vad) for the VAD model, and [Rhasspy](https://github.com/rhasspy/pysilero-vad) for the Python packaging.
+- [TEN Framework](https://github.com/TEN-framework/ten-vad) for the VAD model.

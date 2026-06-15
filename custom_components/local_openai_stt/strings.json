@@ -50,7 +50,7 @@
         },
         "data_description": {
           "vad_sensitivity": "How quickly the utterance ends after you stop speaking. Dynamic adapts to utterance length (snappy for short commands, patient for long questions). Relaxed waits longer, Aggressive cuts off sooner.",
-          "vad_speech_threshold": "Silero VAD probability above which a frame is treated as speech (0–1).",
+          "vad_speech_threshold": "VAD probability above which a frame is treated as speech (0–1).",
           "mic_gain": "Software amplification applied to incoming audio before VAD and transcription. Increase if quiet voices are missed; reduce if loud speech sounds distorted.",
           "debug_log": "When on, each STT call writes one log file under <config>/local_openai_stt_sessions/ with per-chunk VAD probabilities. Use for diagnosing 'never ends' problems; turn off when done.",
           "debug_log_keep": "Older session logs are deleted automatically once this many newer sessions exist."
