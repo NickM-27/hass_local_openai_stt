@@ -30,7 +30,6 @@ API_KEY = "not-needed"
 # request from that endpoint. Add entries here to compare several at once.
 BACKENDS: dict[str, str] = {
     "https://chat.storagewhacker.com/v1": "Qwen3-ASR",
-    "http://192.168.50.106:11100/v1": "parakeet-cpp-nemotron-3.5-asr-streaming-0.6b",
 }
 
 PROMPT = (
