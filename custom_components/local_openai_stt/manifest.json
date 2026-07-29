@@ -7,6 +7,6 @@
   "integration_type": "service",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/nickmowen/hass_local_openai_stt/issues",
-  "requirements": ["openai==2.21.0", "pysilero-vad==3.0.1"],
-  "version": "1.3.1"
+  "requirements": ["openai==2.45.0", "pysilero-vad==3.0.1"],
+  "version": "1.3.2"
 }
