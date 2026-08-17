@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from openai import AsyncOpenAI, OpenAIError
+from openai import APIConnectionError, AsyncOpenAI
 import voluptuous as vol
 
 from homeassistant.config_entries import (
@@ -55,11 +55,26 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def _list_models(base_url: str, api_key: str) -> list[str]:
-    """Fetch the list of model IDs from an OpenAI-compatible server."""
+    """Fetch the list of model IDs from an OpenAI-compatible server.
+
+    Raises APIConnectionError if the server cannot be reached at all. Any other
+    failure (e.g. the server does not implement /v1/models, returns 404, or
+    responds with an unexpected body) is logged and yields an empty list so the
+    user can type a model name by hand.
+    """
     client = AsyncOpenAI(base_url=base_url, api_key=api_key or DEFAULT_API_KEY)
     try:
         page = await client.models.list()
-        return sorted({m.id for m in page.data})
+        return sorted({m.id for m in page.data if getattr(m, "id", None)})
+    except APIConnectionError:
+        raise
+    except Exception as err:  # noqa: BLE001 - optional endpoint, never fatal
+        _LOGGER.warning(
+            "Could not list models from %s (%s); falling back to free-text entry",
+            base_url,
+            err,
+        )
+        return []
     finally:
         await client.close()
 
@@ -114,8 +129,8 @@ class LocalOpenAISTTConfigFlow(ConfigFlow, domain=DOMAIN):
 
             try:
                 self._models = await _list_models(base_url, api_key)
-            except OpenAIError as err:
-                _LOGGER.warning("Could not list models from %s: %s", base_url, err)
+            except APIConnectionError as err:
+                _LOGGER.warning("Could not connect to %s: %s", base_url, err)
                 errors["base"] = "cannot_connect"
             else:
                 self._connection = {
@@ -180,7 +195,7 @@ class LocalOpenAISTTOptionsFlow(OptionsFlow):
                 self.config_entry.data[CONF_BASE_URL],
                 self.config_entry.data.get(CONF_API_KEY, DEFAULT_API_KEY),
             )
-        except OpenAIError:
+        except APIConnectionError:
             models = []
 
         cur = {**self.config_entry.data, **self.config_entry.options}

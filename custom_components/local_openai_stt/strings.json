@@ -21,14 +21,14 @@
           "temperature": "Temperature"
         },
         "data_description": {
-          "model": "Whisper model to use for transcription.",
+          "model": "Whisper model to use for transcription. If your server does not list its models, type the model name here.",
           "prompt": "Optional bias text passed with each request. Useful for unusual vocabulary, names, or acronyms.",
           "temperature": "Sampling temperature. 0 is deterministic; higher values allow more variation."
         }
       }
     },
     "error": {
-      "cannot_connect": "Could not reach the server or list models. Check the base URL and API key."
+      "cannot_connect": "Could not reach the server. Check the base URL and API key."
     },
     "abort": {
       "already_configured": "A Local OpenAI STT entry for this base URL already exists."
