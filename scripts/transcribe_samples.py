@@ -33,13 +33,7 @@ BACKENDS: dict[str, str] = {
 }
 
 PROMPT = (
-    "You transcribe English voice input for a Home Assistant smart-home "
-    "system. Utterances are usually smart-home commands (lights, switches, "
-    "thermostat, locks, media, timers), weather questions, or general "
-    "knowledge questions, but may be arbitrary. Output only the exact words "
-    "spoken, verbatim, in English. Do not translate, paraphrase, summarize, "
-    "or add commentary. Do not invent words. If the audio is silent, "
-    "unintelligible, or contains only background noise, output an empty string."
+    "You transcribe English voice input for a Home Assistant smart-home system. Utterances are usually smart-home commands (lights, switches, thermostat, locks, media, timers), weather questions, or general knowledge questions, but may be arbitrary."
 )
 
 SAMPLES_DIR = Path(__file__).parent / "samples"

@@ -87,6 +87,33 @@ MIN_SPEECH_SECONDS_TO_LATCH = 0.3
 # effective post-latch floor (``command_seconds - speech_seconds``).
 MIN_POST_LATCH_SECONDS = 0.7
 
+# The wake-word chime the voice satellite plays lands at the head of every
+# capture at close to full scale. Silero is recurrent, and that transient
+# drives its internal state into a regime where it reports ~0 for the rest of
+# the session: on byte-identical speech audio, feeding the chime first takes
+# the peak probability from 0.73 to 0.05 and detects no speech at all. It does
+# not recover on its own inside the no-speech window (still dead after 2 s of
+# padded silence), so a quiet utterance behind a chime never latches and every
+# interaction costs the full NO_SPEECH_TIMEOUT_SECONDS. Boosting ``mic_gain``
+# cannot help, because it scales the chime by the same factor.
+#
+# So we withhold the leading transient from the detector entirely and
+# ``reset()`` it once the level has decayed. Resetting restores the
+# clean-state probabilities exactly (0.05 -> 0.73 on the same frames). Audio
+# is still recorded throughout; only VAD scoring is deferred, so the backend
+# receives the chime it wants.
+#
+# The guard arms on the first frame only. A chimed capture opens near full
+# scale (-0 to -10 dBFS measured) and a chimeless one opens on room tone
+# (-40 dBFS or below), so the entry gate has ~28 dB of margin and a capture
+# that doesn't start loud skips warm-up entirely.
+VAD_WARMUP_ENTRY_PEAK = 0.25  # ~-12 dBFS on frame 0 arms the guard
+VAD_WARMUP_DECAY_RATIO = 0.03  # resume 30 dB below the transient's own peak
+# At the bound we reset and resume rather than keep withholding: a capture
+# whose level never decays (e.g. already dynamic-range compressed) would
+# otherwise have the utterance itself withheld.
+VAD_WARMUP_MAX_SECONDS = 0.6
+
 
 SUPPORTED_LANGUAGES: list[str] = [
     "af",
@@ -446,6 +473,14 @@ async def _collect_until_silence(
     how soon end-of-speech may fire, so very short utterances aren't cut
     off before Whisper has anything to work with.
 
+    Chime guard: if the capture opens with a full-scale transient (the wake
+    acknowledgement chime), its frames are withheld from the detector and
+    :meth:`SileroVoiceActivityDetector.reset` is called once the level has
+    decayed ``VAD_WARMUP_DECAY_RATIO`` below the transient's peak. Without
+    this the chime poisons Silero's recurrent state for the whole session and
+    quiet speech behind it is never detected. Withheld frames are still
+    recorded and still counted in ``chunk_index``.
+
     Trailing-silence cutoff is resolved per-frame via
     :meth:`VadSensitivity.to_seconds`; for the ``DYNAMIC`` tier this grows
     with accumulated ``speech_seconds`` so short commands cut off fast and
@@ -460,6 +495,9 @@ async def _collect_until_silence(
     trailing_silence = 0.0
     pending_speech_seconds = 0.0
     post_latch_seconds = 0.0
+    warmup_active = True
+    warmup_seconds = 0.0
+    transient_peak = 0.0
     chunk_index = 0
     last_recv_monotonic: float | None = None
     session_start = time.monotonic()
@@ -487,6 +525,36 @@ async def _collect_until_silence(
         while len(leftover) >= BYTES_PER_VAD_CHUNK:
             frame = bytes(leftover[:BYTES_PER_VAD_CHUNK])
             del leftover[:BYTES_PER_VAD_CHUNK]
+
+            if warmup_active:
+                peak = (
+                    float(np.abs(np.frombuffer(frame, dtype=np.int16)).max())
+                    / 32768.0
+                )
+                transient_peak = max(transient_peak, peak)
+                warmup_seconds += VAD_CHUNK_SECONDS
+
+                if transient_peak < VAD_WARMUP_ENTRY_PEAK:
+                    # Didn't open loud, so there is no chime to withhold.
+                    warmup_active = False
+                elif (
+                    peak <= transient_peak * VAD_WARMUP_DECAY_RATIO
+                    or warmup_seconds >= VAD_WARMUP_MAX_SECONDS
+                ):
+                    warmup_active = False
+                    vad.reset()
+                    session_logger.write_event(
+                        f"VAD_RESET chunk_index={chunk_index} "
+                        f"transient_peak={transient_peak:.4f} "
+                        f"peak={peak:.4f} withheld={warmup_seconds:.3f}s"
+                    )
+                else:
+                    session_logger.write_event(
+                        f"WARMUP i={chunk_index} peak={peak:.4f} "
+                        f"transient_peak={transient_peak:.4f}"
+                    )
+                    chunk_index += 1
+                    continue
 
             prob = vad(frame)
 

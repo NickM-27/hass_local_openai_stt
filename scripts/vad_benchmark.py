@@ -53,6 +53,11 @@ NO_SPEECH_TIMEOUT_SECONDS = 5.0
 MIN_SPEECH_SECONDS_TO_LATCH = 0.3
 MIN_POST_LATCH_SECONDS = 0.7
 
+# Chime guard, mirrored from custom_components/.../stt.py.
+VAD_WARMUP_ENTRY_PEAK = 0.25
+VAD_WARMUP_DECAY_RATIO = 0.03
+VAD_WARMUP_MAX_SECONDS = 0.6
+
 SAMPLES_DIR = Path(__file__).parent / "samples"
 FIRERED_MODEL_DIR = Path(__file__).parent / ".fireredvad_models" / "Stream-VAD"
 
@@ -72,6 +77,27 @@ def trailing_silence_cutoff(sensitivity: str, speech_seconds: float) -> float:
     return 0.7  # default
 
 
+def chime_guard_frames(samples: np.ndarray, frame: int) -> int:
+    """Head frames to withhold from the detector (port of stt.py's guard).
+
+    Returns 0 when the capture doesn't open with a full-scale transient, so
+    chimeless clips are scored from frame 0 exactly as before.
+    """
+    if len(samples) < frame:
+        return 0
+    if float(np.abs(samples[:frame]).max()) / 32768.0 < VAD_WARMUP_ENTRY_PEAK:
+        return 0
+    transient = 0.0
+    withheld = 0.0
+    for j in range(0, len(samples) - frame + 1, frame):
+        peak = float(np.abs(samples[j : j + frame]).max()) / 32768.0
+        transient = max(transient, peak)
+        withheld += frame / SAMPLE_RATE
+        if peak <= transient * VAD_WARMUP_DECAY_RATIO or withheld >= VAD_WARMUP_MAX_SECONDS:
+            return j // frame + 1
+    return 0
+
+
 # --------------------------------------------------------------------------- #
 # VAD adapters: each yields one probability per native frame for an int16 clip.
 # --------------------------------------------------------------------------- #
@@ -81,7 +107,7 @@ class FrameProbs:
 
     name: str
     frame_seconds: float
-    probs: list[float]
+    probs: list[float | None]
     infer_seconds: float  # wall time spent purely inside vad inference
     audio_seconds: float
 
@@ -93,12 +119,27 @@ class FrameProbs:
 # An adapter is a callable: (int16 samples) -> FrameProbs, or None if unavailable.
 Adapter = Callable[[np.ndarray], FrameProbs]
 
+# Set from --no-chime-guard; module-level so adapters can read it.
+CHIME_GUARD = True
 
-def _stream(samples: np.ndarray, frame: int, step_fn) -> tuple[list[float], float]:
-    """Feed non-overlapping ``frame``-sample windows to ``step_fn``; time it."""
-    probs: list[float] = []
+
+def _stream(samples: np.ndarray, frame: int, step_fn, *,
+            withhold: int = 0, reset_fn=None) -> tuple[list[float | None], float]:
+    """Feed non-overlapping ``frame``-sample windows to ``step_fn``; time it.
+
+    The first ``withhold`` frames are never shown to the detector (they yield
+    ``None``, which the decision machine ignores); ``reset_fn`` is invoked at
+    the boundary so scoring resumes from clean recurrent state.
+    """
+    probs: list[float | None] = []
     infer = 0.0
     for j in range(0, len(samples) - frame + 1, frame):
+        idx = j // frame
+        if idx < withhold:
+            probs.append(None)
+            continue
+        if idx == withhold and withhold and reset_fn is not None:
+            reset_fn()
         window = samples[j : j + frame]
         t0 = time.perf_counter()
         probs.append(step_fn(window))
@@ -124,7 +165,9 @@ def make_pysilero() -> Adapter | None:
         def step(window: np.ndarray) -> float:
             return vad(window.tobytes())
 
-        probs, infer = _stream(samples, frame, step)
+        probs, infer = _stream(samples, frame, step,
+                               withhold=chime_guard_frames(samples, frame) if CHIME_GUARD else 0,
+                               reset_fn=vad.reset)
         return FrameProbs("pysilero-vad 3.0.1 (silero v6.2 ggml)", frame / SAMPLE_RATE,
                           probs, infer, len(samples) / SAMPLE_RATE)
 
@@ -158,7 +201,9 @@ def make_silero_official() -> Adapter | None:
             t = torch.from_numpy(window.astype("float32") / 32768.0)
             return model(t, SAMPLE_RATE).item()
 
-        probs, infer = _stream(samples, frame, step)
+        probs, infer = _stream(samples, frame, step,
+                               withhold=chime_guard_frames(samples, frame) if CHIME_GUARD else 0,
+                               reset_fn=model.reset_states)
         return FrameProbs(f"silero-vad {ver} (official onnx)", frame / SAMPLE_RATE,
                           probs, infer, len(samples) / SAMPLE_RATE)
 
@@ -177,10 +222,17 @@ def make_ten_vad() -> Adapter | None:
         vad.process(samples[:frame])  # warm up
         vad = TenVad(hop_size=frame)
 
-        def step(window: np.ndarray) -> float:
-            return float(vad.process(window)[0])
+        holder = {"vad": vad}
 
-        probs, infer = _stream(samples, frame, step)
+        def step(window: np.ndarray) -> float:
+            return float(holder["vad"].process(window)[0])
+
+        def reset() -> None:
+            holder["vad"] = TenVad(hop_size=frame)
+
+        probs, infer = _stream(samples, frame, step,
+                               withhold=chime_guard_frames(samples, frame) if CHIME_GUARD else 0,
+                               reset_fn=reset)
         return FrameProbs("ten-vad", frame / SAMPLE_RATE, probs, infer,
                           len(samples) / SAMPLE_RATE)
 
@@ -255,6 +307,9 @@ def decide(fp: FrameProbs, *, speech_threshold: float, sensitivity: str) -> Deci
 
     for i, prob in enumerate(fp.probs):
         elapsed = (i + 1) * dt
+        if prob is None:
+            # Withheld by the chime guard: recorded, but not scored.
+            continue
         if prob >= speech_threshold:
             state = "speech"
         elif prob < silence_prob_threshold:
@@ -316,7 +371,7 @@ def fmt(v: float | None, suffix: str = "") -> str:
 
 def sparkline(probs: list[float]) -> str:
     blocks = " ▁▂▃▄▅▆▇█"
-    return "".join(blocks[min(8, int(p * 8.999))] for p in probs)
+    return "".join("·" if p is None else blocks[min(8, int(p * 8.999))] for p in probs)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -325,10 +380,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--threshold", type=float, default=0.4, help="speech threshold (default 0.4)")
     ap.add_argument("--sensitivity", default="dynamic",
                     choices=["dynamic", "default", "relaxed", "aggressive"])
+    ap.add_argument("--no-chime-guard", action="store_true",
+                    help="disable the head-of-stream chime guard (pre-fix behaviour)")
     ap.add_argument("--trace", metavar="CLIP",
                     help="print per-frame probability sparklines for clips whose "
                          "name contains CLIP, then exit")
     args = ap.parse_args(argv)
+
+    global CHIME_GUARD
+    CHIME_GUARD = not args.no_chime_guard
 
     if not SAMPLES_DIR.is_dir():
         print(f"missing samples dir: {SAMPLES_DIR}", file=sys.stderr)
