@@ -103,16 +103,40 @@ MIN_POST_LATCH_SECONDS = 0.7
 # is still recorded throughout; only VAD scoring is deferred, so the backend
 # receives the chime it wants.
 #
-# The guard arms on the first frame only. A chimed capture opens near full
-# scale (-0 to -10 dBFS measured) and a chimeless one opens on room tone
-# (-40 dBFS or below), so the entry gate has ~28 dB of margin and a capture
-# that doesn't start loud skips warm-up entirely.
-VAD_WARMUP_ENTRY_PEAK = 0.25  # ~-12 dBFS on frame 0 arms the guard
+# The guard can only arm within the first few frames. The chime doesn't
+# always land on frame 0: captures have been seen opening on ~32 ms of room
+# tone (-35 dBFS) with the chime rising through frame 1 and peaking near
+# full scale in frame 2. Frames before the chime are scored normally, so a
+# capture that never opens loud is unaffected. A chimed capture peaks near
+# full scale (-0 to -10 dBFS measured) and a chimeless one sits on room tone
+# (-35 dBFS or below), so the entry gate has ~20 dB of margin.
+VAD_WARMUP_ENTRY_PEAK = 0.25  # ~-12 dBFS within the entry window arms the guard
+VAD_WARMUP_ENTRY_FRAMES = 4  # ~128 ms
 VAD_WARMUP_DECAY_RATIO = 0.03  # resume 30 dB below the transient's own peak
 # At the bound we reset and resume rather than keep withholding: a capture
 # whose level never decays (e.g. already dynamic-range compressed) would
 # otherwise have the utterance itself withheld.
 VAD_WARMUP_MAX_SECONDS = 0.6
+
+# Silero scores quiet far-field speech (~-30 dBFS RMS) well below threshold
+# even with clean recurrent state, so frames fed to the detector are boosted
+# by up to VAD_GAIN_MAX. This only affects what the detector sees; the
+# recorded audio is untouched. Two limits keep the boost from backfiring:
+#
+# * The gain is capped per frame so the frame's peak never exceeds
+#   VAD_GAIN_TARGET_PEAK. A flat boost clips loud speech, which Silero scores
+#   *lower* (4x flat drops -15 dBFS speech from ~0.5 to ~0.2 and makes
+#   already-loud captures time out).
+# * Frames near the session's noise floor are not boosted. Some room tone
+#   already scores in the "uncertain" band; boosting it keeps it there, so
+#   trailing silence never accumulates and end-of-speech never fires. The
+#   boost ramps in over VAD_GAIN_RAMP_DB and is at full strength once a frame
+#   is VAD_GAIN_GATE_DB above the quietest frame seen so far.
+VAD_GAIN_MAX = 6.0
+VAD_GAIN_TARGET_PEAK = 0.5  # ~-6 dBFS
+VAD_GAIN_GATE_DB = 10.0
+VAD_GAIN_RAMP_DB = 6.0
+VAD_NOISE_FLOOR_MIN_DB = -70.0  # a digitally silent frame mustn't open the gate
 
 
 SUPPORTED_LANGUAGES: list[str] = [
@@ -392,6 +416,34 @@ def _apply_gain(pcm: bytes, gain: float) -> bytes:
     return arr.astype(np.int16).tobytes()
 
 
+class _VadBoost:
+    """Per-session, noise-gated, peak-capped gain for frames fed to the VAD."""
+
+    def __init__(self) -> None:
+        self._floor_db: float | None = None
+
+    def __call__(self, frame: bytes) -> tuple[bytes, float]:
+        """Return ``frame`` boosted for VAD scoring, and the gain applied."""
+        samples = np.frombuffer(frame, dtype=np.int16).astype(np.int32)
+        peak = int(np.abs(samples).max()) if samples.size else 0
+        if peak == 0:
+            return frame, 1.0
+
+        rms = math.sqrt(float(np.mean(samples.astype(np.float64) ** 2))) / 32768.0
+        rms_db = max(VAD_NOISE_FLOOR_MIN_DB, 20.0 * math.log10(max(rms, 1e-9)))
+        if self._floor_db is None or rms_db < self._floor_db:
+            self._floor_db = rms_db
+
+        gain = min(VAD_GAIN_MAX, VAD_GAIN_TARGET_PEAK * 32768.0 / peak)
+        above_floor = rms_db - self._floor_db
+        ramp_start = VAD_GAIN_GATE_DB - VAD_GAIN_RAMP_DB
+        if gain <= 1.0 or above_floor <= ramp_start:
+            return frame, 1.0
+        if above_floor < VAD_GAIN_GATE_DB:
+            gain = 1.0 + (gain - 1.0) * (above_floor - ramp_start) / VAD_GAIN_RAMP_DB
+        return (samples.astype(np.float32) * gain).astype(np.int16).tobytes(), gain
+
+
 def _compress_dynamic_range(pcm: bytes) -> bytes:
     """Boost quiet speech so far-field audio reaches transcribable levels.
 
@@ -473,13 +525,18 @@ async def _collect_until_silence(
     how soon end-of-speech may fire, so very short utterances aren't cut
     off before Whisper has anything to work with.
 
-    Chime guard: if the capture opens with a full-scale transient (the wake
-    acknowledgement chime), its frames are withheld from the detector and
+    Chime guard: if a full-scale transient (the wake acknowledgement chime)
+    appears within the first ``VAD_WARMUP_ENTRY_FRAMES`` frames, its frames
+    are withheld from the detector and
     :meth:`SileroVoiceActivityDetector.reset` is called once the level has
     decayed ``VAD_WARMUP_DECAY_RATIO`` below the transient's peak. Without
     this the chime poisons Silero's recurrent state for the whole session and
     quiet speech behind it is never detected. Withheld frames are still
     recorded and still counted in ``chunk_index``.
+
+    VAD boost: every scored frame passes through :class:`_VadBoost` so quiet
+    speech reaches Silero at a level it scores reliably. Only the detector
+    sees the boost.
 
     Trailing-silence cutoff is resolved per-frame via
     :meth:`VadSensitivity.to_seconds`; for the ``DYNAMIC`` tier this grows
@@ -487,6 +544,7 @@ async def _collect_until_silence(
     long, thoughtful questions get more pause tolerance.
     """
     vad = SileroVoiceActivityDetector()
+    vad_boost = _VadBoost()
     recorded = bytearray()
     leftover = bytearray()
 
@@ -496,6 +554,7 @@ async def _collect_until_silence(
     pending_speech_seconds = 0.0
     post_latch_seconds = 0.0
     warmup_active = True
+    warmup_armed = False
     warmup_seconds = 0.0
     transient_peak = 0.0
     chunk_index = 0
@@ -531,32 +590,40 @@ async def _collect_until_silence(
                     float(np.abs(np.frombuffer(frame, dtype=np.int16)).max())
                     / 32768.0
                 )
-                transient_peak = max(transient_peak, peak)
-                warmup_seconds += VAD_CHUNK_SECONDS
+                if not warmup_armed and peak >= VAD_WARMUP_ENTRY_PEAK:
+                    warmup_armed = True
 
-                if transient_peak < VAD_WARMUP_ENTRY_PEAK:
-                    # Didn't open loud, so there is no chime to withhold.
-                    warmup_active = False
-                elif (
-                    peak <= transient_peak * VAD_WARMUP_DECAY_RATIO
-                    or warmup_seconds >= VAD_WARMUP_MAX_SECONDS
-                ):
-                    warmup_active = False
-                    vad.reset()
-                    session_logger.write_event(
-                        f"VAD_RESET chunk_index={chunk_index} "
-                        f"transient_peak={transient_peak:.4f} "
-                        f"peak={peak:.4f} withheld={warmup_seconds:.3f}s"
-                    )
+                if not warmup_armed:
+                    if chunk_index + 1 >= VAD_WARMUP_ENTRY_FRAMES:
+                        # No chime in the entry window, so nothing to withhold.
+                        warmup_active = False
                 else:
-                    session_logger.write_event(
-                        f"WARMUP i={chunk_index} peak={peak:.4f} "
-                        f"transient_peak={transient_peak:.4f}"
-                    )
-                    chunk_index += 1
-                    continue
+                    transient_peak = max(transient_peak, peak)
+                    warmup_seconds += VAD_CHUNK_SECONDS
+                    if (
+                        peak <= transient_peak * VAD_WARMUP_DECAY_RATIO
+                        or warmup_seconds >= VAD_WARMUP_MAX_SECONDS
+                    ):
+                        warmup_active = False
+                        vad.reset()
+                        # Frames scored before the chime arrived must not
+                        # count toward the latch either.
+                        pending_speech_seconds = 0.0
+                        session_logger.write_event(
+                            f"VAD_RESET chunk_index={chunk_index} "
+                            f"transient_peak={transient_peak:.4f} "
+                            f"peak={peak:.4f} withheld={warmup_seconds:.3f}s"
+                        )
+                    else:
+                        session_logger.write_event(
+                            f"WARMUP i={chunk_index} peak={peak:.4f} "
+                            f"transient_peak={transient_peak:.4f}"
+                        )
+                        chunk_index += 1
+                        continue
 
-            prob = vad(frame)
+            vad_frame, vad_gain = vad_boost(frame)
+            prob = vad(vad_frame)
 
             if prob >= speech_threshold:
                 state = "speech"
@@ -593,6 +660,7 @@ async def _collect_until_silence(
             session_logger.log_chunk(
                 index=chunk_index,
                 prob=prob,
+                vad_gain=vad_gain,
                 state=state,
                 speech_started=speech_started,
                 speech_seconds=speech_seconds,

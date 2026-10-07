@@ -73,6 +73,8 @@ The integration owns end-of-speech detection. Three knobs in the options flow:
 - **Speech detection threshold** — Silero probability above which a frame is treated as speech. The "silence" threshold is derived as `max(0.1, threshold * 0.4)` so probabilities between the two are treated as "uncertain" and don't cut the sentence off mid-utterance.
 - **Microphone gain** — software amplification applied to incoming audio before VAD _and_ before the Whisper request. Increase if quiet voices are missed; decrease if loud speech sounds distorted.
 
+Independently of microphone gain, the audio fed to Silero (and only to Silero) is boosted by up to 6× per 32 ms frame. The boost is capped so a frame never peaks above -6 dBFS, and frames near the room's noise floor are left alone so background noise isn't mistaken for speech. This lets quiet, far-field speech latch without clipping loud speech; the audio sent to Whisper is not affected.
+
 If VAD never confidently detects speech, a hardcoded 5-second timeout still ships the buffered audio to Whisper. Long utterances are unbounded as long as voice activity continues.
 
 ### Diagnostic Logs

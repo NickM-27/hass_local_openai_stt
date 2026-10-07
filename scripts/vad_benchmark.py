@@ -55,8 +55,16 @@ MIN_POST_LATCH_SECONDS = 0.7
 
 # Chime guard, mirrored from custom_components/.../stt.py.
 VAD_WARMUP_ENTRY_PEAK = 0.25
+VAD_WARMUP_ENTRY_FRAMES = 4
 VAD_WARMUP_DECAY_RATIO = 0.03
 VAD_WARMUP_MAX_SECONDS = 0.6
+
+# Detector-only boost, mirrored from custom_components/.../stt.py.
+VAD_GAIN_MAX = 6.0
+VAD_GAIN_TARGET_PEAK = 0.5
+VAD_GAIN_GATE_DB = 10.0
+VAD_GAIN_RAMP_DB = 6.0
+VAD_NOISE_FLOOR_MIN_DB = -70.0
 
 SAMPLES_DIR = Path(__file__).parent / "samples"
 FIRERED_MODEL_DIR = Path(__file__).parent / ".fireredvad_models" / "Stream-VAD"
@@ -80,22 +88,56 @@ def trailing_silence_cutoff(sensitivity: str, speech_seconds: float) -> float:
 def chime_guard_frames(samples: np.ndarray, frame: int) -> int:
     """Head frames to withhold from the detector (port of stt.py's guard).
 
-    Returns 0 when the capture doesn't open with a full-scale transient, so
-    chimeless clips are scored from frame 0 exactly as before.
+    Returns 0 when no full-scale transient appears in the entry window, so
+    chimeless clips are scored from frame 0. Otherwise returns the index of
+    the frame the detector is reset on, which (as in stt.py) is itself scored.
+    Frames before the chime are withheld here; stt.py scores them but clears
+    the latch counter at the reset, which is equivalent because the entry
+    window is shorter than the latch floor.
     """
-    if len(samples) < frame:
-        return 0
-    if float(np.abs(samples[:frame]).max()) / 32768.0 < VAD_WARMUP_ENTRY_PEAK:
+    peaks = [
+        float(np.abs(samples[j : j + frame].astype(np.int32)).max()) / 32768.0
+        for j in range(0, len(samples) - frame + 1, frame)
+    ]
+    onset = next(
+        (i for i, p in enumerate(peaks[:VAD_WARMUP_ENTRY_FRAMES]) if p >= VAD_WARMUP_ENTRY_PEAK),
+        None,
+    )
+    if onset is None:
         return 0
     transient = 0.0
     withheld = 0.0
-    for j in range(0, len(samples) - frame + 1, frame):
-        peak = float(np.abs(samples[j : j + frame]).max()) / 32768.0
-        transient = max(transient, peak)
+    for i in range(onset, len(peaks)):
+        transient = max(transient, peaks[i])
         withheld += frame / SAMPLE_RATE
-        if peak <= transient * VAD_WARMUP_DECAY_RATIO or withheld >= VAD_WARMUP_MAX_SECONDS:
-            return j // frame + 1
+        if peaks[i] <= transient * VAD_WARMUP_DECAY_RATIO or withheld >= VAD_WARMUP_MAX_SECONDS:
+            return i
     return 0
+
+
+class VadBoost:
+    """Port of stt.py's ``_VadBoost``: noise-gated, peak-capped detector gain."""
+
+    def __init__(self) -> None:
+        self.floor_db: float | None = None
+
+    def __call__(self, window: np.ndarray) -> np.ndarray:
+        samples = window.astype(np.int32)
+        peak = int(np.abs(samples).max()) if samples.size else 0
+        if peak == 0:
+            return window
+        rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2))) / 32768.0
+        rms_db = max(VAD_NOISE_FLOOR_MIN_DB, 20.0 * np.log10(max(rms, 1e-9)))
+        if self.floor_db is None or rms_db < self.floor_db:
+            self.floor_db = rms_db
+        gain = min(VAD_GAIN_MAX, VAD_GAIN_TARGET_PEAK * 32768.0 / peak)
+        above_floor = rms_db - self.floor_db
+        ramp_start = VAD_GAIN_GATE_DB - VAD_GAIN_RAMP_DB
+        if gain <= 1.0 or above_floor <= ramp_start:
+            return window
+        if above_floor < VAD_GAIN_GATE_DB:
+            gain = 1.0 + (gain - 1.0) * (above_floor - ramp_start) / VAD_GAIN_RAMP_DB
+        return (samples.astype(np.float32) * gain).astype(np.int16)
 
 
 # --------------------------------------------------------------------------- #
@@ -119,8 +161,9 @@ class FrameProbs:
 # An adapter is a callable: (int16 samples) -> FrameProbs, or None if unavailable.
 Adapter = Callable[[np.ndarray], FrameProbs]
 
-# Set from --no-chime-guard; module-level so adapters can read it.
+# Set from --no-chime-guard / --no-vad-boost; module-level so adapters can read them.
 CHIME_GUARD = True
+VAD_BOOST = True
 
 
 def _stream(samples: np.ndarray, frame: int, step_fn, *,
@@ -133,6 +176,7 @@ def _stream(samples: np.ndarray, frame: int, step_fn, *,
     """
     probs: list[float | None] = []
     infer = 0.0
+    boost = VadBoost() if VAD_BOOST else None
     for j in range(0, len(samples) - frame + 1, frame):
         idx = j // frame
         if idx < withhold:
@@ -141,6 +185,8 @@ def _stream(samples: np.ndarray, frame: int, step_fn, *,
         if idx == withhold and withhold and reset_fn is not None:
             reset_fn()
         window = samples[j : j + frame]
+        if boost is not None:
+            window = boost(window)
         t0 = time.perf_counter()
         probs.append(step_fn(window))
         infer += time.perf_counter() - t0
@@ -382,13 +428,16 @@ def main(argv: list[str] | None = None) -> int:
                     choices=["dynamic", "default", "relaxed", "aggressive"])
     ap.add_argument("--no-chime-guard", action="store_true",
                     help="disable the head-of-stream chime guard (pre-fix behaviour)")
+    ap.add_argument("--no-vad-boost", action="store_true",
+                    help="feed the detector unboosted audio (pre-fix behaviour)")
     ap.add_argument("--trace", metavar="CLIP",
                     help="print per-frame probability sparklines for clips whose "
                          "name contains CLIP, then exit")
     args = ap.parse_args(argv)
 
-    global CHIME_GUARD
+    global CHIME_GUARD, VAD_BOOST
     CHIME_GUARD = not args.no_chime_guard
+    VAD_BOOST = not args.no_vad_boost
 
     if not SAMPLES_DIR.is_dir():
         print(f"missing samples dir: {SAMPLES_DIR}", file=sys.stderr)

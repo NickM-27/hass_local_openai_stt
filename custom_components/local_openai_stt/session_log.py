@@ -64,6 +64,7 @@ class SessionLogger:
         *,
         index: int,
         prob: float,
+        vad_gain: float,
         state: str,
         speech_started: bool,
         speech_seconds: float,
@@ -79,7 +80,7 @@ class SessionLogger:
             self._max_prob = prob
         self._fp.write(
             f"t={time.monotonic() - self._t0:.3f} "
-            f"CHUNK i={index} prob={prob:.3f} {state} "
+            f"CHUNK i={index} prob={prob:.3f} gain={vad_gain:.2f} {state} "
             f"speech_started={speech_started} "
             f"speech_total={speech_seconds:.3f} "
             f"trailing_silence={trailing_silence:.3f}\n"
