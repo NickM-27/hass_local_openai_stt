@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterable
-from functools import partial
 import io
 import logging
 import math
@@ -31,6 +30,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .client import async_create_client
 from .const import (
     CONF_API_KEY,
     CONF_BASE_URL,
@@ -53,7 +53,7 @@ from .const import (
     DOMAIN,
     VadSensitivity,
 )
-from .session_log import SessionLogger, open_session_logger
+from .session_log import SessionLogger, async_open_session_logger
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -266,20 +266,13 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
         )
 
     async def _get_client(self) -> AsyncOpenAI:
-        """Return a cached AsyncOpenAI client pointed at the configured server.
-
-        The ``AsyncOpenAI`` constructor builds an httpx client, which loads the
-        system CA bundle from disk (a blocking call). Run it in the executor so
-        we don't block the event loop.
-        """
+        """Return a cached AsyncOpenAI client pointed at the configured server."""
         if self._client is None:
             opts = self._opts
-            self._client = await self.hass.async_add_executor_job(
-                partial(
-                    AsyncOpenAI,
-                    base_url=opts[CONF_BASE_URL],
-                    api_key=opts.get(CONF_API_KEY) or DEFAULT_API_KEY,
-                )
+            self._client = await async_create_client(
+                self.hass,
+                opts[CONF_BASE_URL],
+                opts.get(CONF_API_KEY) or DEFAULT_API_KEY,
             )
         return self._client
 
@@ -301,7 +294,7 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
         mic_gain = float(opts.get(CONF_MIC_GAIN, DEFAULT_MIC_GAIN))
         silence_prob_threshold = max(0.1, threshold * 0.4)
 
-        session_logger = open_session_logger(
+        session_logger = await async_open_session_logger(
             hass=self.hass,
             enabled=bool(opts.get(CONF_DEBUG_LOG, DEFAULT_DEBUG_LOG)),
             keep=int(opts.get(CONF_DEBUG_LOG_KEEP, DEFAULT_DEBUG_LOG_KEEP)),
@@ -314,69 +307,67 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             mic_gain=mic_gain,
         )
 
-        pcm = await _collect_until_silence(
-            stream,
-            sensitivity=sensitivity,
-            speech_threshold=threshold,
-            silence_prob_threshold=silence_prob_threshold,
-            mic_gain=mic_gain,
-            session_logger=session_logger,
-        )
-
-        if not pcm:
-            session_logger.write_event("RESULT empty_audio")
-            session_logger.close()
-            return SpeechResult(None, SpeechResultState.ERROR)
-
-        wav_bytes = _pcm_to_wav(pcm)
-        session_logger.save_audio(wav_bytes)
-
+        # Closing in ``finally`` stops the logger's writer thread even when the
+        # pipeline cancels the session mid-stream.
         try:
-            text = await self._transcribe(metadata, wav_bytes)
-        except OpenAIError as err:
-            _LOGGER.error("Transcription failed: %s", err)
-            session_logger.write_event(f"RESULT transcription_error: {err!r}")
-            session_logger.close()
-            return SpeechResult(None, SpeechResultState.ERROR)
+            pcm = await _collect_until_silence(
+                stream,
+                sensitivity=sensitivity,
+                speech_threshold=threshold,
+                silence_prob_threshold=silence_prob_threshold,
+                mic_gain=mic_gain,
+                session_logger=session_logger,
+            )
 
-        if text is None:
-            session_logger.write_event("RESULT no_text")
-            session_logger.close()
-            return SpeechResult(None, SpeechResultState.ERROR)
+            if not pcm:
+                session_logger.write_event("RESULT empty_audio")
+                return SpeechResult(None, SpeechResultState.ERROR)
 
-        # Backend heard nothing — retry once with dynamic-range compression
-        # to rescue quiet / far-field speech the first pass missed.
-        if not text.strip():
-            session_logger.write_event("FALLBACK_COMPRESS reason=no_audio_heard")
-            compressed_pcm = _compress_dynamic_range(pcm)
-            session_logger.write_event(f"COMPRESSED bytes={len(compressed_pcm)}")
-            compressed_wav = _pcm_to_wav(compressed_pcm)
-            session_logger.save_audio(compressed_wav, variant="compressed")
+            wav_bytes = _pcm_to_wav(pcm)
+            session_logger.save_audio(wav_bytes)
 
             try:
-                text = await self._transcribe(metadata, compressed_wav)
+                text = await self._transcribe(metadata, wav_bytes)
             except OpenAIError as err:
-                _LOGGER.error("Transcription (compressed retry) failed: %s", err)
-                session_logger.write_event(
-                    f"RESULT transcription_error_compressed: {err!r}"
-                )
-                session_logger.close()
+                _LOGGER.error("Transcription failed: %s", err)
+                session_logger.write_event(f"RESULT transcription_error: {err!r}")
                 return SpeechResult(None, SpeechResultState.ERROR)
 
             if text is None:
-                session_logger.write_event("RESULT no_text_compressed")
-                session_logger.close()
+                session_logger.write_event("RESULT no_text")
                 return SpeechResult(None, SpeechResultState.ERROR)
 
-            session_logger.write_event(
-                f"RESULT ok_compressed text={text!r} chars={len(text)}"
-            )
-            session_logger.close()
-            return SpeechResult(text, SpeechResultState.SUCCESS)
+            # Backend heard nothing — retry once with dynamic-range compression
+            # to rescue quiet / far-field speech the first pass missed.
+            if not text.strip():
+                session_logger.write_event("FALLBACK_COMPRESS reason=no_audio_heard")
+                compressed_pcm = _compress_dynamic_range(pcm)
+                session_logger.write_event(f"COMPRESSED bytes={len(compressed_pcm)}")
+                compressed_wav = _pcm_to_wav(compressed_pcm)
+                session_logger.save_audio(compressed_wav, variant="compressed")
 
-        session_logger.write_event(f"RESULT ok text={text!r} chars={len(text)}")
-        session_logger.close()
-        return SpeechResult(text, SpeechResultState.SUCCESS)
+                try:
+                    text = await self._transcribe(metadata, compressed_wav)
+                except OpenAIError as err:
+                    _LOGGER.error("Transcription (compressed retry) failed: %s", err)
+                    session_logger.write_event(
+                        f"RESULT transcription_error_compressed: {err!r}"
+                    )
+                    return SpeechResult(None, SpeechResultState.ERROR)
+
+                if text is None:
+                    session_logger.write_event("RESULT no_text_compressed")
+                    return SpeechResult(None, SpeechResultState.ERROR)
+
+                session_logger.write_event(
+                    f"RESULT ok_compressed text={text!r} chars={len(text)}"
+                )
+                return SpeechResult(text, SpeechResultState.SUCCESS)
+
+            session_logger.write_event(f"RESULT ok text={text!r} chars={len(text)}")
+            return SpeechResult(text, SpeechResultState.SUCCESS)
+        finally:
+            session_logger.close()
 
     async def _transcribe(
         self, metadata: SpeechMetadata, wav_bytes: bytes

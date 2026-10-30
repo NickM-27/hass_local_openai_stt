@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from openai import APIConnectionError, AsyncOpenAI
+from openai import APIConnectionError
 import voluptuous as vol
 
 from homeassistant.config_entries import (
@@ -14,7 +14,7 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlow,
 )
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
@@ -27,6 +27,7 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
+from .client import async_create_client
 from .const import (
     CONF_API_KEY,
     CONF_BASE_URL,
@@ -54,7 +55,7 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-async def _list_models(base_url: str, api_key: str) -> list[str]:
+async def _list_models(hass: HomeAssistant, base_url: str, api_key: str) -> list[str]:
     """Fetch the list of model IDs from an OpenAI-compatible server.
 
     Raises APIConnectionError if the server cannot be reached at all. Any other
@@ -62,7 +63,7 @@ async def _list_models(base_url: str, api_key: str) -> list[str]:
     responds with an unexpected body) is logged and yields an empty list so the
     user can type a model name by hand.
     """
-    client = AsyncOpenAI(base_url=base_url, api_key=api_key or DEFAULT_API_KEY)
+    client = await async_create_client(hass, base_url, api_key or DEFAULT_API_KEY)
     try:
         page = await client.models.list()
         return sorted({m.id for m in page.data if getattr(m, "id", None)})
@@ -128,7 +129,7 @@ class LocalOpenAISTTConfigFlow(ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured()
 
             try:
-                self._models = await _list_models(base_url, api_key)
+                self._models = await _list_models(self.hass, base_url, api_key)
             except APIConnectionError as err:
                 _LOGGER.warning("Could not connect to %s: %s", base_url, err)
                 errors["base"] = "cannot_connect"
@@ -192,6 +193,7 @@ class LocalOpenAISTTOptionsFlow(OptionsFlow):
 
         try:
             models = await _list_models(
+                self.hass,
                 self.config_entry.data[CONF_BASE_URL],
                 self.config_entry.data.get(CONF_API_KEY, DEFAULT_API_KEY),
             )
