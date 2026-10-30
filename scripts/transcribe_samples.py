@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
-from openai import OpenAI, OpenAIError
+from openai import NOT_GIVEN, OpenAI, OpenAIError
 
 # Qwen3-ASR emits a trained-in prefix like ``language English<asr_text>...`` on
 # every response. The reference servers (vLLM, qwen-asr-server) strip it before
@@ -26,15 +27,22 @@ QWEN_ASR_PREFIX = re.compile(r"^language\s+\S+\s*<asr_text>", re.IGNORECASE)
 
 API_KEY = "not-needed"
 
-# Backends to transcribe each clip through, keyed by base URL with the model to
-# request from that endpoint. Add entries here to compare several at once.
-BACKENDS: dict[str, str] = {
-    "https://chat.storagewhacker.com/v1": "Qwen3-ASR",
-}
-
 PROMPT = (
     "You transcribe English voice input for a Home Assistant smart-home system. Utterances are usually smart-home commands (lights, switches, thermostat, locks, media, timers), weather questions, or general knowledge questions, but may be arbitrary."
 )
+
+# Backends to transcribe each clip through, as ``(base_url, model, prompt)``;
+# a ``None`` prompt omits the field. Add entries here to compare several at once.
+#
+# LFM-ASR needs a ``Perform ASR in <language>`` system prompt. llama-server's
+# transcription handler already builds that from ``language``, and appends any
+# ``prompt`` as extra user text, which LFM then tends to echo back as the
+# transcript. So it must be sent without a prompt.
+BACKENDS: list[tuple[str, str, str | None]] = [
+    ("https://chat.storagewhacker.com/v1", "Qwen3-ASR", PROMPT),
+    ("https://chat.storagewhacker.com/v1", "Nemotron-Bolt", PROMPT),
+    ("https://chat.storagewhacker.com/v1", "LFM-ASR", None),
+]
 
 SAMPLES_DIR = Path(__file__).parent / "samples"
 
@@ -68,12 +76,12 @@ def main() -> int:
         print("no backends configured in BACKENDS", file=sys.stderr)
         return 1
 
-    # One client per endpoint, paired with its model and a display label.
+    # One client per backend, paired with its model and prompt.
     backends = [
-        (model, base_url, OpenAI(base_url=base_url, api_key=API_KEY))
-        for base_url, model in BACKENDS.items()
+        (model, prompt, OpenAI(base_url=base_url, api_key=API_KEY))
+        for base_url, model, prompt in BACKENDS
     ]
-    for model, base_url, _ in backends:
+    for base_url, model, _ in BACKENDS:
         print(f"backend {model} @ {base_url}")
     print()
 
@@ -90,7 +98,8 @@ def main() -> int:
         for variant, p in variants:
             with p.open("rb") as fp:
                 data = fp.read()
-            for model, _, client in backends:
+            for model, prompt, client in backends:
+                start = time.monotonic()
                 try:
                     result = client.audio.transcriptions.create(
                         model=model,
@@ -98,12 +107,15 @@ def main() -> int:
                         response_format="json",
                         temperature=0.0,
                         language="en",
-                        prompt=PROMPT,
+                        prompt=prompt if prompt is not None else NOT_GIVEN,
                     )
                     text = (getattr(result, "text", "") or "").strip()
                     text = QWEN_ASR_PREFIX.sub("", text).strip()
+                    elapsed = time.monotonic() - start
                     tag = "OK " if text else "EMPTY"
-                    print(f"  {variant:<{v_width}}  {model:<{m_width}}  {tag}  {text!r}")
+                    print(
+                        f"  {variant:<{v_width}}  {model:<{m_width}}  {elapsed:5.2f}s  {tag}  {text!r}"
+                    )
                 except OpenAIError as err:
                     print(f"  {variant:<{v_width}}  {model:<{m_width}}  ERR  {err!r}")
         print()
