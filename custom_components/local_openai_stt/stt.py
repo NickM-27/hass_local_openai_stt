@@ -62,6 +62,12 @@ _LOGGER = logging.getLogger(__name__)
 # client; llama-server's /v1/audio/transcriptions handler does not, so we strip
 # it ourselves. Harmless for other models that never produce the prefix.
 _ASR_LANGUAGE_PREFIX_RE = re.compile(r"^language\s+\S+\s*<asr_text>", re.IGNORECASE)
+# The model can also stop right after the language (``language English``),
+# with no ``<asr_text>`` and no text. That is "heard nothing", not an
+# utterance. It is checked on the raw response: real speech always carries the
+# tag, so an utterance that happens to begin with those words is not affected.
+# The language ends at whitespace or "<".
+_ASR_BARE_PREFIX_RE = re.compile(r"^\s*language\s+[^\s<]+\s*$", re.IGNORECASE)
 
 SAMPLE_RATE = 16000
 SAMPLE_WIDTH = 2  # 16-bit
@@ -395,6 +401,11 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
         text = getattr(result, "text", None)
         if text is None:
             return None
+        if _ASR_BARE_PREFIX_RE.match(text):
+            _LOGGER.warning(
+                "ASR returned only a language prefix (%r); treating it as no speech", text
+            )
+            return ""
         return _ASR_LANGUAGE_PREFIX_RE.sub("", text).strip()
 
 

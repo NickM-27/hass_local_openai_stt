@@ -24,6 +24,9 @@ from openai import NOT_GIVEN, OpenAI, OpenAIError
 # returning to the client, but llama-server's /v1/audio/transcriptions handler
 # doesn't, so we strip it here.
 QWEN_ASR_PREFIX = re.compile(r"^language\s+\S+\s*<asr_text>", re.IGNORECASE)
+# ``language English`` with no tag and no text means no speech. Checked on the
+# raw response, as the integration does.
+QWEN_ASR_BARE_PREFIX = re.compile(r"^\s*language\s+[^\s<]+\s*$", re.IGNORECASE)
 
 API_KEY = "not-needed"
 
@@ -110,7 +113,11 @@ def main() -> int:
                         prompt=prompt if prompt is not None else NOT_GIVEN,
                     )
                     text = (getattr(result, "text", "") or "").strip()
-                    text = QWEN_ASR_PREFIX.sub("", text).strip()
+                    text = (
+                        ""
+                        if QWEN_ASR_BARE_PREFIX.match(text)
+                        else QWEN_ASR_PREFIX.sub("", text).strip()
+                    )
                     elapsed = time.monotonic() - start
                     tag = "OK " if text else "EMPTY"
                     print(
