@@ -63,10 +63,12 @@ _LOGGER = logging.getLogger(__name__)
 # it ourselves. Harmless for other models that never produce the prefix.
 _ASR_LANGUAGE_PREFIX_RE = re.compile(r"^language\s+\S+\s*<asr_text>", re.IGNORECASE)
 # The model can also stop right after the language (``language English``),
-# with no ``<asr_text>`` and no text. That is "heard nothing", not an
-# utterance. It is checked on the raw response: real speech always carries the
-# tag, so an utterance that happens to begin with those words is not affected.
-# The language ends at whitespace or "<".
+# with no ``<asr_text>`` and no text, even for audio that has speech in it (seen
+# with ``language=en`` sent). ``_transcribe`` asks again without the language;
+# a bare prefix that remains is "heard nothing", not an utterance. It is
+# checked on the raw response: real speech always carries the tag, so an
+# utterance that happens to begin with those words is not affected. The
+# language ends at whitespace or "<".
 _ASR_BARE_PREFIX_RE = re.compile(r"^\s*language\s+[^\s<]+\s*$", re.IGNORECASE)
 
 SAMPLE_RATE = 16000
@@ -376,7 +378,10 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             session_logger.close()
 
     async def _transcribe(
-        self, metadata: SpeechMetadata, wav_bytes: bytes
+        self,
+        metadata: SpeechMetadata,
+        wav_bytes: bytes,
+        send_language: bool = True,
     ) -> str | None:
         """POST the WAV to the OpenAI-compatible transcription endpoint."""
         opts = self._opts
@@ -393,7 +398,7 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
         if prompt:
             kwargs["prompt"] = prompt
 
-        if metadata.language:
+        if metadata.language and send_language:
             # OpenAI/Whisper expects ISO-639-1 (e.g. "en", not "en-US").
             kwargs["language"] = metadata.language.split("-")[0]
 
@@ -402,8 +407,22 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
         if text is None:
             return None
         if _ASR_BARE_PREFIX_RE.match(text):
+            if "language" in kwargs:
+                # The same audio transcribes fine without the language (or
+                # with ``language=English``): ask again and let the model pick.
+                _LOGGER.warning(
+                    "ASR returned only a language prefix (%r) with "
+                    "language=%s; retrying without it",
+                    text,
+                    kwargs["language"],
+                )
+                return await self._transcribe(
+                    metadata, wav_bytes, send_language=False
+                )
             _LOGGER.warning(
-                "ASR returned only a language prefix (%r); treating it as no speech", text
+                "ASR returned only a language prefix (%r); treating it as "
+                "no speech",
+                text,
             )
             return ""
         return _ASR_LANGUAGE_PREFIX_RE.sub("", text).strip()
