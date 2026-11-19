@@ -63,6 +63,35 @@ _LOGGER = logging.getLogger(__name__)
 # it ourselves. Harmless for other models that never produce the prefix.
 _ASR_LANGUAGE_PREFIX_RE = re.compile(r"^language\s+\S+\s*<asr_text>", re.IGNORECASE)
 
+# Qwen3-ASR takes full English language names ("English"), not ISO codes. llama-server
+# has no Qwen3-specific language handling and appends whatever it is given to the
+# prompt as free text ("(language: en)"); a bare code sometimes makes the model answer
+# with only "language English" and no transcript. The reference qwen_asr package
+# accepts only these names (qwen_asr/inference/utils.py, SUPPORTED_LANGUAGES).
+_QWEN3_ASR_LANGUAGES: dict[str, str] = {
+    "zh": "Chinese", "en": "English", "yue": "Cantonese", "ar": "Arabic",
+    "de": "German", "fr": "French", "es": "Spanish", "pt": "Portuguese",
+    "id": "Indonesian", "it": "Italian", "ko": "Korean", "ru": "Russian",
+    "th": "Thai", "vi": "Vietnamese", "ja": "Japanese", "tr": "Turkish",
+    "hi": "Hindi", "ms": "Malay", "nl": "Dutch", "sv": "Swedish",
+    "da": "Danish", "fi": "Finnish", "pl": "Polish", "cs": "Czech",
+    "fil": "Filipino", "tl": "Filipino", "fa": "Persian", "el": "Greek",
+    "ro": "Romanian", "hu": "Hungarian", "mk": "Macedonian",
+}
+
+
+def _language_param(model: str, language: str) -> str | None:
+    """Return the ``language`` value to send, or None to let the server detect it.
+
+    OpenAI/Whisper expect ISO-639-1 (e.g. "en", not "en-US"). Qwen3-ASR models
+    expect the full name instead, and an unsupported language is omitted.
+    """
+    code = language.split("-")[0].lower()
+    if "qwen3-asr" in model.lower():
+        return _QWEN3_ASR_LANGUAGES.get(code)
+    return language.split("-")[0]
+
+
 SAMPLE_RATE = 16000
 SAMPLE_WIDTH = 2  # 16-bit
 # Silero requires exactly 512 samples per call at 16 kHz (~32 ms).
@@ -388,8 +417,9 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             kwargs["prompt"] = prompt
 
         if metadata.language:
-            # OpenAI/Whisper expects ISO-639-1 (e.g. "en", not "en-US").
-            kwargs["language"] = metadata.language.split("-")[0]
+            language = _language_param(opts[CONF_MODEL], metadata.language)
+            if language:
+                kwargs["language"] = language
 
         result = await client.audio.transcriptions.create(**kwargs)
         text = getattr(result, "text", None)
