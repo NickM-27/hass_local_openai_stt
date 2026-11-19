@@ -62,14 +62,35 @@ _LOGGER = logging.getLogger(__name__)
 # client; llama-server's /v1/audio/transcriptions handler does not, so we strip
 # it ourselves. Harmless for other models that never produce the prefix.
 _ASR_LANGUAGE_PREFIX_RE = re.compile(r"^language\s+\S+\s*<asr_text>", re.IGNORECASE)
-# The model can also stop right after the language (``language English``),
-# with no ``<asr_text>`` and no text, even for audio that has speech in it (seen
-# with ``language=en`` sent). ``_transcribe`` asks again without the language;
-# a bare prefix that remains is "heard nothing", not an utterance. It is
-# checked on the raw response: real speech always carries the tag, so an
-# utterance that happens to begin with those words is not affected. The
-# language ends at whitespace or "<".
-_ASR_BARE_PREFIX_RE = re.compile(r"^\s*language\s+[^\s<]+\s*$", re.IGNORECASE)
+
+# Qwen3-ASR takes full English language names ("English"), not ISO codes. llama-server
+# has no Qwen3-specific language handling and appends whatever it is given to the
+# prompt as free text ("(language: en)"); a bare code sometimes makes the model answer
+# with only "language English" and no transcript. The reference qwen_asr package
+# accepts only these names (qwen_asr/inference/utils.py, SUPPORTED_LANGUAGES).
+_QWEN3_ASR_LANGUAGES: dict[str, str] = {
+    "zh": "Chinese", "en": "English", "yue": "Cantonese", "ar": "Arabic",
+    "de": "German", "fr": "French", "es": "Spanish", "pt": "Portuguese",
+    "id": "Indonesian", "it": "Italian", "ko": "Korean", "ru": "Russian",
+    "th": "Thai", "vi": "Vietnamese", "ja": "Japanese", "tr": "Turkish",
+    "hi": "Hindi", "ms": "Malay", "nl": "Dutch", "sv": "Swedish",
+    "da": "Danish", "fi": "Finnish", "pl": "Polish", "cs": "Czech",
+    "fil": "Filipino", "tl": "Filipino", "fa": "Persian", "el": "Greek",
+    "ro": "Romanian", "hu": "Hungarian", "mk": "Macedonian",
+}
+
+
+def _language_param(model: str, language: str) -> str | None:
+    """Return the ``language`` value to send, or None to let the server detect it.
+
+    OpenAI/Whisper expect ISO-639-1 (e.g. "en", not "en-US"). Qwen3-ASR models
+    expect the full name instead, and an unsupported language is omitted.
+    """
+    code = language.split("-")[0].lower()
+    if "qwen3-asr" in model.lower():
+        return _QWEN3_ASR_LANGUAGES.get(code)
+    return language.split("-")[0]
+
 
 SAMPLE_RATE = 16000
 SAMPLE_WIDTH = 2  # 16-bit
@@ -378,10 +399,7 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
             session_logger.close()
 
     async def _transcribe(
-        self,
-        metadata: SpeechMetadata,
-        wav_bytes: bytes,
-        send_language: bool = True,
+        self, metadata: SpeechMetadata, wav_bytes: bytes
     ) -> str | None:
         """POST the WAV to the OpenAI-compatible transcription endpoint."""
         opts = self._opts
@@ -398,33 +416,15 @@ class LocalOpenAISTTEntity(SpeechToTextEntity):
         if prompt:
             kwargs["prompt"] = prompt
 
-        if metadata.language and send_language:
-            # OpenAI/Whisper expects ISO-639-1 (e.g. "en", not "en-US").
-            kwargs["language"] = metadata.language.split("-")[0]
+        if metadata.language:
+            language = _language_param(opts[CONF_MODEL], metadata.language)
+            if language:
+                kwargs["language"] = language
 
         result = await client.audio.transcriptions.create(**kwargs)
         text = getattr(result, "text", None)
         if text is None:
             return None
-        if _ASR_BARE_PREFIX_RE.match(text):
-            if "language" in kwargs:
-                # The same audio transcribes fine without the language (or
-                # with ``language=English``): ask again and let the model pick.
-                _LOGGER.warning(
-                    "ASR returned only a language prefix (%r) with "
-                    "language=%s; retrying without it",
-                    text,
-                    kwargs["language"],
-                )
-                return await self._transcribe(
-                    metadata, wav_bytes, send_language=False
-                )
-            _LOGGER.warning(
-                "ASR returned only a language prefix (%r); treating it as "
-                "no speech",
-                text,
-            )
-            return ""
         return _ASR_LANGUAGE_PREFIX_RE.sub("", text).strip()
 
 
